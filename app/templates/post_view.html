@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row items-center mb-6" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem;">
+  <div>
+    <a href="/board/{{ board.id }}" class="btn ghost btn-sm" style="margin-bottom: 0.5rem; display: inline-block;">&larr; 목록으로</a>
+    <h2 style="margin: 0; font-size: 1.5rem; color: var(--text);">{{ post.title }}</h2>
+  </div>
+  {% if me.id == post.user_id or me.is_admin %}
+  <div style="display: flex; gap: 0.5rem;">
+    <form method="POST" action="/board/{{ board.id }}/post/{{ post.id }}/delete" onsubmit="return confirm('정말 삭제하시겠습니까?');" style="margin: 0;">
+      <button type="submit" class="btn danger btn-sm">삭제</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+    <div>
+      <span style="font-weight: 600; color: var(--text); margin-right: 1rem;">{{ post.author.name if post.author else '알수없음' }}</span>
+      <span style="color: var(--muted); font-size: 0.875rem;">{{ post.author.dept if post.author else '' }} {{ post.author.grade if post.author else '' }}</span>
+    </div>
+    <div style="color: var(--muted); font-size: 0.875rem; text-align: right;">
+      <div>작성일: {{ post.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+      <div style="margin-top: 0.25rem;">조회수: {{ post.views }}</div>
+    </div>
+  </div>
+
+  <div style="min-height: 300px; white-space: pre-wrap; line-height: 1.6; color: var(--text);">
+    {{ post.content }}
+  </div>
+</div>
+
+<div style="text-align: center;">
+  <a href="/board/{{ board.id }}" class="btn ghost" style="padding: 0.5rem 2rem;">목록</a>
+</div>
+{% endblock %}

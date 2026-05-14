@@ -1,0 +1,25 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "192.168.10.163/docker/approval_mvp/.venv/Scripts/python.exe": true,
+        "/^//192\\.168\\.10\\.163/docker/approval_mvp/\\.venv/Scripts/uvicorn\\.exe app\\.main:app --host 0\\.0\\.0\\.0 --port 8000$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^//192\\.168\\.10\\.163/docker/approval_mvp/\\.venv/Scripts/uvicorn\\.exe app\\.main:app --host 0\\.0\\.0\\.0 --port 8000 --reload$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\\\\\\\192\\.168\\.10\\.163\\\\docker\\\\approval_mvp\\\\\\.venv\\\\Scripts\\\\pip\\.exe install httpx$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^//192\\.168\\.10\\.163/docker/approval_mvp/\\.venv/Scripts/python\\.exe - << 'PY'\nfrom app\\.main import SessionLocal, User, Document\nfrom app\\.main import hash_pw\n\ndb=SessionLocal\\(\\)\nadmin = db\\.query\\(User\\)\\.filter\\(User\\.username=='admin'\\)\\.first\\(\\)\nif not admin:\n    admin = User\\(username='admin', name='관리자', is_admin=True, is_active=True, password_hash=hash_pw\\('admin1234!'\\), must_change_pw=False\\)\n    db\\.add\\(admin\\); db\\.commit\\(\\)\n# create test user\nu = db\\.query\\(User\\)\\.filter\\(User\\.username=='tester'\\)\\.first\\(\\)\nif not u:\n    u = User\\(username='tester', name='테스트 사용자', is_admin=False, is_active=True, password_hash=hash_pw\\('test'\\)\\)\n    db\\.add\\(u\\); db\\.commit\\(\\)\n# create a draft doc and then approve\nu = db\\.query\\(User\\)\\.filter\\(User\\.username=='tester'\\)\\.first\\(\\)\nd = Document\\(title='테스트 문서', body='이것은 테스트 본문입니다\\.\\\\n두번째 줄입니다\\.', creator_id=u\\.id, status='DRAFT'\\)\ndb\\.add\\(d\\); db\\.commit\\(\\); db\\.refresh\\(d\\)\nprint\\('created doc', d\\.id\\)\n# simulate approval by admin\nadmin = db\\.query\\(User\\)\\.filter\\(User\\.username=='admin'\\)\\.first\\(\\)\nd\\.status='APPROVED'\nfrom app\\.main import EventLog\ntry:\n    db\\.add\\(EventLog\\(doc_id=d\\.id, user_id=admin\\.id, event='APPROVED', note='approved'\\)\\)\n    db\\.commit\\(\\)\nexcept Exception as e:\n    print\\('eventlog err', e\\)\nprint\\('approved doc', d\\.id\\)\ndb\\.close\\(\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^//192\\.168\\.10\\.163/docker/approval_mvp/\\.venv/Scripts/uvicorn\\.exe app\\.main:app --host 127\\.0\\.0\\.1 --port 8000 --reload$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

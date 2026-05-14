@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h3>사용자 관리</h3>
+  <div class="muted" style="margin-bottom:10px;">
+    <a href="/dashboard">대시보드</a> · <a href="/admin/grades">직급관리</a>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0;">사용자 추가</h4>
+    <form method="post" action="/admin/users/add">
+      <div class="row">
+        <div style="flex:1; min-width:180px;">
+          <label>아이디</label>
+          <input name="username" required>
+        </div>
+        <div style="flex:1; min-width:180px;">
+          <label>이름</label>
+          <input name="name">
+        </div>
+        <div style="flex:1; min-width:180px;">
+          <label>부서</label>
+          <input name="dept">
+        </div>
+        <div style="flex:1; min-width:180px;">
+          <label>직급</label>
+          <select name="grade_id"><option value="">(선택)</option>{% for g in grades %}<option value="{{g.id}}">{{g.name}}</option>{% endfor %}</select>
+          <div class="muted">목록에 없으면 직접 입력</div>
+          <input name="grade" placeholder="직접 입력">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <div style="flex:1; min-width:180px;">
+          <label>임시 비밀번호(초기)</label>
+          <input name="temp_pw" value="changeme123!">
+          <div class="muted">※ 최초 로그인 시 변경 강제</div>
+        </div>
+        <div style="width:160px;">
+          <label>관리자?</label>
+          <select name="is_admin">
+            <option value="0" selected>아니오</option>
+            <option value="1">예</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <button class="btn" type="submit">추가</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0;">CSV 일괄 등록</h4>
+    <div class="muted">헤더 예: username,name,dept,grade,is_admin</div>
+    <form method="post" action="/admin/users/import_csv" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".csv" required>
+      <button class="btn" type="submit">업로드/등록</button>
+    </form>
+    <div class="muted" style="margin-top:6px;">초기 비밀번호는 모두 changeme123! 로 설정됩니다.</div>
+  </div>
+
+  <h4>사용자 목록</h4>
+    <table>
+    <tr><th>ID</th><th>아이디</th><th>이름</th><th>부서</th><th>직급</th><th>관리자</th><th>활성</th><th>초기변경</th><th>관리</th></tr>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.id }}</td>
+        <td>{{ u.username }}</td>
+        <td>{{ u.name }}</td>
+        <td>{{ u.dept }}</td>
+        <td>{{ u.grade.name if u.grade else '' }}</td>
+        <td>{{ "Y" if u.is_admin else "" }}</td>
+        <td>{{ "Y" if u.is_active else "" }}</td>
+        <td>{{ "Y" if u.must_change_pw else "" }}</td>
+        <td>
+          <a class="btn" href="/admin/users/{{u.id}}/edit" style="text-decoration:none;">수정</a>
+          <form method="post" action="/admin/users/reset_pw" style="display:inline">
+            <input type="hidden" name="user_id" value="{{ u.id }}">
+            <button class="btn" type="submit">비번초기화</button>
+          </form>
+          {% if u.username != "admin" %}
+          <form method="post" action="/admin/users/{{u.id}}/delete" style="display:inline" onsubmit="return confirm('사용자를 비활성화(삭제)할까요?');">
+            <button class="btn" type="submit">삭제</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 20px 0;">새 문서 작성</h2>
+
+  <form method="post" action="/doc/new" id="doc_form" enctype="multipart/form-data">
+    <div class="grid">
+      <div>
+        <label>구분</label>
+        <select name="doc_type" id="doc_type">
+          <option value="GENERAL">일반 기안</option>
+          <option value="LEAVE">휴가신청서</option>
+          <option value="EXPENSE">지출결의서</option>
+          <option value="OVERTIME">연장근무 신청서</option>
+          <option value="CERTIFICATE">증명서 발급 신청서</option>
+          <option value="QUALITY">품질문서</option>
+          <option value="WORK_LOG">업무일지</option>
+          <option value="TRIP_REPORT">출장복명서</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 공통 입력: 제목 -->
+    <div id="common_title_field" style="margin-top:12px;">
+      <label>제목</label>
+      <input name="title" required placeholder="제목을 입력하세요">
+    </div>
+    
+    <!-- 각 양식별 상세 입력폼 -->
+    <div id="form_details_container" style="margin-top:12px;">
+      <!-- JS에 의해 동적으로 채워질 영역 -->
+    </div>
+    
+    <!-- 공통 입력: 본문 -->
+    <div style="margin-top:12px;">
+      <label id="body_label">내용</label>
+      <textarea name="body" placeholder="내용을 입력하세요" rows="8"></textarea>
+    </div>
+
+    <div style="margin-top:16px;">
+      <label>첨부파일</label>
+      <input type="file" name="files" multiple>
+      <div class="muted small">여러 파일 선택 가능</div>
+    </div>
+    <div class="row" style="margin-top:20px; justify-content:flex-end;">
+      <a class="btn ghost" href="/dashboard">취소</a>
+      <button class="btn primary" type="submit">저장하고 결재선 지정하기</button>
+    </div>
+  </form>
+</div>
+
+<!-- ==================== TEMPLATES FOR JS ==================== -->
+<template id="form_template_general">
+  <!-- 일반기안은 추가 입력폼 없음 -->
+</template>
+
+<template id="form_template_quality">
+  <div id="doc_no_wrap">
+    <label>품질문서 번호(수기)</label>
+    <input name="doc_no" placeholder="예: QP-01-03">
+    <div class="muted small" style="margin-top:6px;">* Rev는 결재 완료 후 자동 +1 (추후 개정 기능에서 사용)</div>
+  </div>
+</template>
+
+<template id="form_template_leave">
+  <div class="card" style="background: #f8fafc;">
+    <h4 style="margin-top:0;">* 휴가 신청 상세</h4>
+    <div class="grid">
+      <div>
+        <label>휴가 종류</label>
+        <select name="leave_kind" required>
+          <option value="연차">연차</option>
+          <option value="반차(오전)">반차(오전)</option>
+          <option value="반차(오후)">반차(오후)</option>
+          <option value="병가">병가</option>
+          <option value="공가">공가</option>
+          <option value="기타">기타</option>
+        </select>
+      </div>
+      <div>
+        <label>시간(선택)</label>
+        <input name="leave_hours" placeholder="예: 4h / 2h">
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px;">
+      <div>
+        <label>시작일</label>
+        <input type="date" name="leave_start" required>
+      </div>
+      <div>
+        <label>종료일</label>
+        <input type="date" name="leave_end" required>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="form_template_expense">
+  <div class="card" style="background: #f8fafc;">
+    <h4 style="margin-top:0;">* 지출 내역</h4>
+    <table class="table" style="margin-bottom:10px;">
+      <thead>
+        <tr>
+          <th width="100">지출일자</th>
+          <th width="120">분류</th>
+          <th>내역 (적요)</th>
+          <th width="120">금액(원)</th>
+          <th width="100">비고</th>
+          <th width="50">삭제</th>
+        </tr>
+      </thead>
+      <tbody id="expense_list"></tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3" style="text-align:right; font-weight:bold;">총 지출 금액:</td>
+          <td style="font-weight:bold;"><span id="total_sum_display">0</span> 원</td>
+          <input type="hidden" name="expense_total" id="expense_total" value="0">
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+    </table>
+    <button type="button" class="btn small ghost" onclick="addExpenseRow()">+ 내역 추가</button>
+  </div>
+</template>
+
+<template id="form_template_overtime">
+  <div class="card" style="background: #f8fafc;">
+    <h4 style="margin-top:0;">* 연장근무 신청 상세</h4>
+    <div class="grid">
+      <div>
+        <label>근무 일자</label>
+        <input type="date" name="overtime_date" required>
+      </div>
+      <div>
+        <label>근무 사유</label>
+        <input type="text" name="overtime_reason" required placeholder="예: 긴급 서버 점검">
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px;">
+      <div>
+        <label>시작 시간</label>
+        <input type="time" name="overtime_start" required>
+      </div>
+      <div>
+        <label>종료 시간</label>
+        <input type="time" name="overtime_end" required>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="form_template_certificate">
+  <div class="card" style="background: #f8fafc;">
+    <h4 style="margin-top:0;">* 증명서 발급 신청 상세</h4>
+    <div class="grid">
+      <div>
+        <label>증명서 종류</label>
+        <select name="cert_type" required>
+          <option value="재직증명서">재직증명서</option>
+          <option value="경력증명서">경력증명서</option>
+          <option value="원천징수영수증">근로소득 원천징수영수증</option>
+          <option value="기타">기타 (상세 내용에 기재)</option>
+        </select>
+      </div>
+      <div>
+        <label>제출처/용도</label>
+        <input type="text" name="cert_usage" required placeholder="예: 은행 제출용 (대출 심사)">
+      </div>
+    </div>
+  </div>
+</template>
+<!-- ==================== 업무일지 ==================== -->
+<template id="form_template_work_log">
+  <div class="card" style="background:#f8fafc;">
+    <h4 style="margin-top:0;">* 업무일지 상세</h4>
+    <div class="form-row" style="margin-bottom:10px;">
+      <label>업무일자</label>
+      <input type="date" name="work_date" required>
+    </div>
+    <div class="table-responsive">
+      <table class="table" style="margin-bottom:10px;">
+        <thead>
+          <tr>
+            <th style="width:100px">소속팀</th>
+            <th style="width:130px">업체명</th>
+            <th>업무내용</th>
+            <th style="width:100px">차량km</th>
+            <th style="width:50px">삭제</th>
+          </tr>
+        </thead>
+        <tbody id="worklog_list"></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn ghost" onclick="addWorkLogRow()">+ 행 추가</button>
+  </div>
+</template>
+
+<!-- ==================== 출장복명서 ==================== -->
+<template id="form_template_trip_report">
+  <div class="card" style="background:#f8fafc;">
+    <h4 style="margin-top:0;">* 출장복명서 상세</h4>
+    <div class="grid" style="margin-bottom:10px;">
+      <div>
+        <label>출장일자</label>
+        <input type="date" name="trip_date" required>
+      </div>
+      <div>
+        <label>출장지</label>
+        <input type="text" name="destination" required placeholder="예: 울산 현대중공업">
+      </div>
+    </div>
+    <div style="margin-bottom:10px;">
+      <label>출장 목적</label>
+      <input type="text" name="purpose" required placeholder="예: 현장 측정 및 시료 채취">
+    </div>
+    <div style="margin-bottom:14px;">
+      <label>사업자등록증 첨부</label>
+      <input type="file" name="registration_file" accept=".pdf,.jpg,.jpeg,.png">
+      <div class="muted" style="font-size:12px;">PDF 또는 이미지 파일</div>
+    </div>
+    <h4 style="margin:16px 0 8px 0;">세금계산서 내역</h4>
+    <div class="table-responsive">
+      <table class="table" style="margin-bottom:10px;">
+        <thead>
+          <tr>
+            <th style="width:60px">권</th>
+            <th style="width:80px">번호</th>
+            <th style="width:100px">날짜</th>
+            <th style="width:120px">업체명</th>
+            <th>내역</th>
+            <th style="width:100px">외상금액</th>
+            <th style="width:100px">현금금액</th>
+            <th style="width:50px">삭제</th>
+          </tr>
+        </thead>
+        <tbody id="trip_list"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5" style="text-align:right;font-weight:bold;">합계:</td>
+            <td style="font-weight:bold;"><span id="trip_credit_sum">0</span></td>
+            <td style="font-weight:bold;"><span id="trip_cash_sum">0</span></td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <button type="button" class="btn ghost" onclick="addTripRow()">+ 내역 추가</button>
+  </div>
+</template>
+
+<!-- ========================================================== -->
+
+<script>
+  // 지출결의서 행 추가/계산 스크립트
+  function formatComma(num) { return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  function unformatComma(str) {
+    if(!str) return 0;
+    return parseInt(str.replace(/,/g, ''), 10) || 0;
+  }
+  function calcTotal() {
+    let sum = 0;
+    document.querySelectorAll('.expense-amt').forEach(el => {
+      let val = unformatComma(el.value);
+      sum += val;
+      el.value = formatComma(val);
+    });
+    document.getElementById('total_sum_display').textContent = formatComma(sum);
+    document.getElementById('expense_total').value = sum;
+  }
+  function addExpenseRow() {
+    const tbody = document.getElementById('expense_list');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="date" name="exp_date" required></td>
+      <td>
+        <div class="exp-cat-container">
+          <select name="exp_cat" onchange="handleCategoryChange(this)">
+            <option value="식비">식비</option>
+            <option value="교통/유류비">교통/유류비</option>
+            <option value="소모품">소모품</option>
+            <option value="장비">장비</option>
+            <option value="접대비">접대비</option>
+            <option value="기타">기타 (직접입력)</option>
+          </select>
+        </div>
+      </td>
+      <td><input type="text" name="exp_desc" placeholder="내역 입력" required></td>
+      <td><input type="text" name="exp_amt" class="expense-amt" style="text-align:right;" onkeyup="calcTotal()" required value="0"></td>
+      <td><input type="text" name="exp_note"></td>
+      <td style="text-align:center;"><button type="button" class="btn small danger" onclick="this.closest('tr').remove(); calcTotal();">X</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  function handleCategoryChange(selectElement) {
+    if (selectElement.value === '기타') {
+        const container = selectElement.parentElement;
+        container.innerHTML = `<input type="text" name="exp_cat" placeholder="항목 직접 입력..." required>`;
+        container.querySelector('input').focus();
+    }
+  }
+
+  // ── 업무일지 동적 Row ──
+  function addWorkLogRow() {
+    const tbody = document.getElementById('worklog_list');
+    if (!tbody) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" name="wl_team" placeholder="측정팀1"></td>
+      <td><input type="text" name="wl_company" placeholder="업체명"></td>
+      <td><input type="text" name="wl_content" placeholder="업무내용" required></td>
+      <td><input type="text" name="wl_mileage" placeholder="0" style="text-align:right;"></td>
+      <td style="text-align:center;"><button type="button" class="btn small danger" onclick="this.closest('tr').remove()">X</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  // ── 출장복명서 동적 Row ──
+  function addTripRow() {
+    const tbody = document.getElementById('trip_list');
+    if (!tbody) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" name="tr_volume" placeholder="1"></td>
+      <td><input type="text" name="tr_docnum" placeholder="001"></td>
+      <td><input type="date" name="tr_date"></td>
+      <td><input type="text" name="tr_company" placeholder="업체명"></td>
+      <td><input type="text" name="tr_details" placeholder="내역"></td>
+      <td><input type="text" name="tr_credit" class="trip-credit" style="text-align:right;" value="0" onkeyup="calcTripTotals()"></td>
+      <td><input type="text" name="tr_cash" class="trip-cash" style="text-align:right;" value="0" onkeyup="calcTripTotals()"></td>
+      <td style="text-align:center;"><button type="button" class="btn small danger" onclick="this.closest('tr').remove(); calcTripTotals();">X</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  function calcTripTotals() {
+    let credit = 0, cash = 0;
+    document.querySelectorAll('.trip-credit').forEach(el => { credit += unformatComma(el.value); el.value = formatComma(unformatComma(el.value)); });
+    document.querySelectorAll('.trip-cash').forEach(el => { cash += unformatComma(el.value); el.value = formatComma(unformatComma(el.value)); });
+    const cs = document.getElementById('trip_credit_sum');
+    const xs = document.getElementById('trip_cash_sum');
+    if (cs) cs.textContent = formatComma(credit);
+    if (xs) xs.textContent = formatComma(cash);
+  }
+
+  // ── 문서 타입 변경 로직 ──
+  const docTypeSelect = document.getElementById("doc_type");
+  const formDetailsContainer = document.getElementById("form_details_container");
+  const commonTitleField = document.getElementById("common_title_field");
+  const bodyLabel = document.getElementById("body_label");
+
+  const AUTO_TITLE_TYPES = ["LEAVE", "EXPENSE", "OVERTIME", "CERTIFICATE", "WORK_LOG", "TRIP_REPORT"];
+
+  function updateForm(docType) {
+    let templateId = "form_template_" + docType.toLowerCase();
+    let template = document.getElementById(templateId);
+
+    formDetailsContainer.innerHTML = template ? template.innerHTML : '';
+
+    if (AUTO_TITLE_TYPES.includes(docType)) {
+      commonTitleField.style.display = "none";
+      commonTitleField.querySelector("input").required = false;
+    } else {
+      commonTitleField.style.display = "block";
+      commonTitleField.querySelector("input").required = true;
+    }
+
+    if (docType === "EXPENSE") { bodyLabel.innerText = "상세 사유 및 첨부파일 설명"; }
+    else if (docType === "WORK_LOG") { bodyLabel.innerText = "특이사항 / 비고"; }
+    else if (docType === "TRIP_REPORT") { bodyLabel.innerText = "출장 결과 요약"; }
+    else { bodyLabel.innerText = "내용"; }
+
+    if (docType === "EXPENSE") addExpenseRow();
+    if (docType === "WORK_LOG") addWorkLogRow();
+    if (docType === "TRIP_REPORT") addTripRow();
+  }
+
+  docTypeSelect.addEventListener("change", (e) => {
+    updateForm(e.target.value);
+  });
+
+  updateForm(docTypeSelect.value);
+</script>
+{% endblock %}
+

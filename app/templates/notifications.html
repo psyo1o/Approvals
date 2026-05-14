@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row items-center mb-6">
+  <h2 style="margin: 0;">알림 센터</h2>
+</div>
+
+<div class="card p-0">
+  <table class="table" style="width: 100%; text-align: left; border-collapse: collapse;">
+    <tbody>
+      {% for noti in notis %}
+      <tr style="border-bottom: 1px solid var(--border); {{ 'background: #f0fdf4;' if not noti.is_read else '' }}">
+        <td style="padding: 1.5rem 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <div style="font-weight: 500; font-size: 1.1rem;">
+              {{ noti.title }}
+              {% if not noti.is_read %}
+                <span style="font-size: 0.75rem; background: var(--primary); color: white; padding: 2px 6px; border-radius: 4px; margin-left: 0.5rem; font-weight: bold;">새 알림</span>
+              {% endif %}
+            </div>
+            <div style="font-size: 0.875rem; color: var(--muted);">{{ noti.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+          </div>
+          {% if noti.link %}
+            <div style="margin-top: 0.5rem;">
+              <a href="{{ noti.link }}" class="btn ghost btn-sm">이동하기 &rarr;</a>
+            </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td style="padding: 3rem 1rem; text-align: center; color: var(--muted);">
+          최근 수신된 알림이 없습니다.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

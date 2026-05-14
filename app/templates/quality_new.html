@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <title>품질문서 - 개정요청</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f7;margin:0}
+    header{background:#111;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:14px}
+    header a{color:#fff;text-decoration:none}
+    .sp{flex:1}
+    .wrap{max-width:900px;margin:18px auto;padding:0 12px}
+    .card{background:#fff;border-radius:10px;padding:14px 16px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+    label{display:block;margin-top:10px;font-weight:600}
+    input,select,textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;margin-top:6px}
+    textarea{min-height:90px}
+    .row{display:flex;gap:12px}
+    .row>div{flex:1}
+    .btn{display:inline-block;background:#111;color:#fff;padding:10px 14px;border-radius:8px;border:0;cursor:pointer}
+    .muted{color:#777}
+  </style>
+</head>
+<body>
+<header>
+  <a href="/dashboard"><b>결재</b></a>
+  <a href="/quality"><b>품질문서</b></a>
+  <div class="sp"></div>
+  {% if user.is_admin %}<a href="/admin">관리자</a>{% endif %}
+  <a href="/logout">로그아웃</a>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2 style="margin:0">품질문서 개정요청 / 신규 등록</h2>
+    <p class="muted">기존 문서를 선택하거나, 신규 문서번호/문서명을 입력하세요. 업로드 파일은 PDF(권장) 또는 이미지 가능합니다.</p>
+
+    <form method="post" action="/quality/new" enctype="multipart/form-data">
+      <label>기존 문서 선택(개정)</label>
+      <select name="doc_id">
+        <option value="">(신규 문서 등록)</option>
+        {% for d in docs %}
+          <option value="{{d.id}}">{{d.doc_no}} · {{d.title}}</option>
+        {% endfor %}
+      </select>
+
+      <div class="row">
+        <div>
+          <label>신규 문서번호</label>
+          <input name="doc_no" placeholder="예: QP-01 / SOP-12"/>
+        </div>
+        <div>
+          <label>신규 문서명</label>
+          <input name="title" placeholder="예: 시료채취 작업표준서"/>
+        </div>
+      </div>
+
+      <label>분류(선택)</label>
+      <input name="category" placeholder="예: SOP / 품질매뉴얼 / 시험방법서"/>
+
+      <div class="row">
+        <div>
+          <label>시행일(선택)</label>
+          <input name="effective_date" placeholder="YYYY-MM-DD"/>
+        </div>
+        <div>
+          <label>결재 모드</label>
+          <select name="mode">
+            <option value="SEQUENTIAL" selected>순차</option>
+            <option value="PARALLEL">병렬</option>
+          </select>
+        </div>
+      </div>
+
+      <label>개정 사유(선택)</label>
+      <textarea name="reason" placeholder="왜 개정하는지"></textarea>
+
+      <label>변경 요약(선택)</label>
+      <textarea name="change_summary" placeholder="어떤 내용이 어떻게 바뀌는지"></textarea>
+
+      <label>결재권자(순서대로 선택)</label>
+      <label>결재자 순서 지정</label>
+<div style="display:grid;grid-template-columns:1fr;gap:10px">
+  <div id="approver-box" style="display:grid;grid-template-columns:1fr;gap:10px">
+  <div>
+    <label style="margin:0 0 6px"> 1차 결재자 </label>
+    <select name="approver1" required>
+      <option value="">(선택)</option>
+      {% for u in users %}
+        <option value="{{u.id}}">{{u.name}} ({{u.login_id}}){% if u.is_admin %} · 관리자{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  {% for n in [2,3,4,5] %}
+  <div class="ap-row" data-n="{{n}}" style="display:none">
+    <label style="margin:0 0 6px"> {{n}}차 결재자 </label>
+    <select name="approver{{n}}" disabled>
+      <option value="">(선택 안함)</option>
+      {% for u in users %}
+        <option value="{{u.id}}">{{u.name}} ({{u.login_id}}){% if u.is_admin %} · 관리자{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endfor %}
+</div>
+
+<div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+  <button type="button" id="btn-add-approver" style="background:#e9eefc;color:#1b3a8a">+ 결재자 추가</button>
+  <button type="button" id="btn-remove-approver" style="background:#f4f4f4;color:#333">- 마지막 결재자 제거</button>
+  <small style="color:#666">기본 1명, 필요 시 최대 5명까지 추가</small>
+</div>
+
+<script>
+(function(){
+  const rows = Array.from(document.querySelectorAll("#approver-box .ap-row"));
+  const addBtn = document.getElementById("btn-add-approver");
+  const rmBtn  = document.getElementById("btn-remove-approver");
+
+  function visibleRows(){
+    return rows.filter(r => r.style.display !== "none");
+  }
+  function showNext(){
+    const next = rows.find(r => r.style.display === "none");
+    if(!next){ alert("결재자는 최대 5명까지 가능합니다."); return; }
+    next.style.display = "";
+    const sel = next.querySelector("select");
+    if(sel){ sel.disabled = false; }
+  }
+  function hideLast(){
+    const vis = visibleRows();
+    if(vis.length === 0){ return; }
+    const last = vis[vis.length - 1];
+    const sel = last.querySelector("select");
+    if(sel){
+      sel.value = "";
+      sel.disabled = true;
+    }
+    last.style.display = "none";
+  }
+
+  addBtn && addBtn.addEventListener("click", showNext);
+  rmBtn  && rmBtn.addEventListener("click", hideLast);
+})();
+</script>
+      </select>
+    </div>
+  {% endfor %}
+</div>
+<small>※ 순차 모드: 위에서 아래(1차→2차→…) 순서대로 진행됩니다. 병렬 모드: 선택된 결재자가 동시에 결재합니다.</small>
+
+      <p class="muted" style="margin:6px 0 0">※ 여러 명 선택 시, 선택된 순서대로 결재 순서가 됩니다.</p>
+
+      <label>파일 업로드(PDF/이미지)</label>
+      <input type="file" name="file" required/>
+
+      <div style="margin-top:14px;display:flex;gap:10px">
+        <button class="btn" type="submit">개정요청 상신</button>
+        <a class="btn" style="background:#444" href="/quality">취소</a>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>

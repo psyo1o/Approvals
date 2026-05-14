@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <title>관리</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f7;margin:0}
+    header{background:#111;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px}
+    header a{color:#fff;text-decoration:none;margin-left:auto}
+    .wrap{max-width:1100px;margin:18px auto;padding:0 14px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .card{background:#fff;border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.06)}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border:1px solid #e2e5e9;font-size:14px;vertical-align:top}
+    th{text-align:left;color:#555}
+    input,select{width:100%;padding:10px;border:1px solid #ddd;border-radius:10px}
+    button{margin-top:10px;padding:10px 14px;border:0;border-radius:10px;background:#111;color:#fff;font-weight:800}
+  </style>
+</head>
+<body>
+<header>
+  <div><a style="color:#fff;text-decoration:none" href="/dashboard">← 대시보드</a> <a href="/quality">품질문서</a></div>
+  <a href="/logout">로그아웃</a>
+</header>
+
+<div class="wrap">
+  <div class="row">
+    <div class="card">
+      <h2>직급</h2>
+      <table>
+        <thead><tr><th>이름</th><th>레벨</th></tr></thead>
+        <tbody>
+          {% for g in grades %}
+          <tr><td>{{g.name}}</td><td>{{g.level}}</td>
+            <td style="text-align:right">
+              <form method="post" action="/admin/grade/delete/{{g.id}}" onsubmit="return confirm(\'직급을 삭제(비활성) 처리할까요?\')">
+                <button type="submit" style="background:#ffebee;border:1px solid #f44336;color:#b71c1c;border-radius:8px;padding:6px 10px">삭제</button>
+              </form>
+            </td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3 style="margin-top:14px">직급 추가</h3>
+      <form method="post" action="/admin/grade/add">
+        <label>직급명</label>
+        <input name="name" required placeholder="예: 팀장">
+        <label>레벨(숫자)</label>
+        <input name="level" type="number" value="1">
+        <button type="submit">추가</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>사용자</h2>
+      <table>
+        <thead><tr><th>ID</th><th>이름</th><th>직급</th><th>관리자</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{u.username}}</td>
+            <td>{{u.name}}</td>
+            <td>{% if u.grade %}{{u.grade.name}}{% else %}-{% endif %}</td>
+            <td>{% if u.is_admin %}Y{% else %}N{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3 style="margin-top:14px">사용자 수정/삭제</h3>
+      <p style="color:#666;font-size:13px;margin-top:-6px;line-height:1.5">
+        - 비밀번호 초기화 체크 시 비밀번호가 <b>ydenv</b>로 바뀌고, 다음 로그인에서 변경이 강제됩니다.<br>
+        - 구버전(비관리자) 정책 때문에 최소 1명은 관리자 계정 유지 권장.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:140px">로그인ID</th>
+            <th style="width:140px">이름</th>
+            <th>직급</th>
+            <th style="width:80px">관리자</th>
+            <th style="width:120px">비밀번호 초기화</th>
+            <th style="width:120px">변경강제</th>
+            <th style="width:90px">저장</th>
+            <th style="width:90px">삭제</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>
+              <form method="post" action="/admin/user/update/{{u.id}}">
+                  <input name="username" value="{{u.username}}" required>
+            </td>
+            <td><input name="name" value="{{u.name}}" required></td>
+            <td>
+              <select name="grade_id">
+                {% for g in grades %}
+                  <option value="{{g.id}}" {% if u.grade and u.grade.id==g.id %}selected{% endif %}>{{g.name}} (level {{g.level}})</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td style="text-align:center">
+              <input type="checkbox" name="is_admin" value="1" {% if u.is_admin %}checked{% endif %}>
+                  <input name="username" required placeholder="예: honggildong">
+            <td style="text-align:center">
+              <input type="checkbox" name="reset_pw" value="1">
+            </td>
+            <td style="text-align:center">
+              <input type="checkbox" name="force_change" value="1" {% if u.must_change_pw %}checked{% endif %}>
+            </td>
+            <td>
+              <button type="submit" style="margin-top:0;width:100%">저장</button>
+              </form>
+            </td>
+            <td>
+              <form method="post" action="/admin/user/delete/{{u.id}}" onsubmit="return confirm('정말 삭제할까요?');">
+                <button type="submit" style="margin-top:0;width:100%;background:#b00020">삭제</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3 style="margin-top:14px">사용자 CSV 일괄등록</h3>
+<form method="post" action="/admin/user/import_csv" enctype="multipart/form-data">
+  <p style="color:#666;font-size:13px;margin-top:-6px;line-height:1.5">
+    CSV 컬럼: <b>username,name,grade,is_admin</b> (is_admin은 선택)<br>
+    - grade는 직급명(예: 대리) / 직급 id / level 숫자(예: 2) 모두 가능<br>
+    - is_admin은 1/Y/TRUE/admin/관리자 등으로 관리자 지정 가능<br>
+    - 신규 사용자는 초기 비밀번호가 <b>ydenv</b>로 생성되고, <b>첫 로그인 시 비밀번호 변경이 강제</b>됩니다.
+  </p>
+  <input type="file" name="file" required>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <input type="checkbox" name="reset_to_ydenv" value="1" checked>
+    기존 사용자도 비밀번호를 <b>ydenv</b>로 초기화(로그인 시 변경 강제)
+  </label>
+  <button type="submit">CSV 등록</button>
+</form>
+
+<h3 style="margin-top:18px">전체 사용자 비밀번호 변경 강제</h3>
+<form method="post" action="/admin/user/force_pw_change_all">
+  <p style="color:#666;font-size:13px;margin-top:-6px;line-height:1.5">
+    체크한 사용자들은 다음 로그인 시 <b>비밀번호 변경 화면</b>으로 강제 이동합니다.
+  </p>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <input type="checkbox" name="include_admin" value="1">
+    관리자 계정도 포함
+  </label>
+  <button type="submit" style="margin-top:10px">전체 적용</button>
+</form>
+
+
+<h3 style="margin-top:14px">사용자 추가</h3>
+      <form method="post" action="/admin/user/add">
+        <label>로그인ID</label>
+        <input name="username" required placeholder="예: honggildong">
+        <label>이름</label>
+        <input name="name" required placeholder="예: 홍길동">
+        <label>초기 비밀번호</label>
+        <input name="password" required value="ydenv">
+        <label>직급</label>
+        <select name="grade_id">
+          {% for g in grades %}
+            <option value="{{g.id}}">{{g.name}} (level {{g.level}})</option>
+          {% endfor %}
+        </select>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="is_admin" value="1"> 관리자</label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="force_change" value="1" checked> 첫 로그인 시 비밀번호 변경 강제</label>
+        <button type="submit">추가</button>
+      </form>
+    </div>
+  </div>
+</div>
+</body>
+</html>

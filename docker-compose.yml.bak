@@ -1,0 +1,15 @@
+services:
+  approval:
+    build: .
+    container_name: approval_mvp
+    ports:
+      - "8080:8000"
+    environment:
+      TZ: Asia/Seoul
+      APP_SECRET: "change-me-long-random"
+      APP_ADMIN_ID: "admin"
+      APP_ADMIN_PW: "admin1234!"
+    volumes:
+      - ./app:/app
+      - ./data:/data
+    restart: unless-stopped

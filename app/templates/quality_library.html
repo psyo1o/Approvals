@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .ql-wrap { display:flex; gap:14px; min-height:75vh; }
+  .ql-sidebar { width:280px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; }
+  .ql-main   { flex:1; min-width:0; display:flex; flex-direction:column; gap:12px; }
+
+  /* ── 사이드바 트리 ── */
+  .tree-box { overflow-y:auto; max-height:calc(75vh - 120px); }
+  .tree ul { list-style:none; padding-left:14px; margin:0; }
+  .tree > ul { padding-left:0; }
+  .tree li { margin:1px 0; }
+  .tree-toggle { cursor:pointer; user-select:none; font-weight:600; display:flex; align-items:center; gap:4px; padding:3px 4px; border-radius:4px; font-size:13px; }
+  .tree-toggle:hover { background:rgba(0,0,0,.05); }
+  .tree-toggle .arrow { transition:transform .15s; display:inline-block; font-size:9px; }
+  .tree-toggle.open .arrow { transform:rotate(90deg); }
+  .tree-file { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 18px; border-radius:4px; font-size:12.5px; cursor:pointer; }
+  .tree-file:hover { background:rgba(0,0,0,.05); }
+  .tree-file.active { background:var(--primary); color:#fff; }
+  .tree-file.active .file-badge { background:rgba(255,255,255,.25); color:#fff; }
+  .tree-file a { color:inherit; text-decoration:none; }
+  .children { display:none; }
+  .children.open { display:block; }
+  .file-badge { font-size:9px; padding:1px 4px; border-radius:3px; background:#e5e7eb; color:#555; text-transform:uppercase; font-weight:600; flex-shrink:0; }
+  .file-badge.pdf { background:#fef2f2; color:#dc2626; }
+  .file-badge.hwp { background:#eff6ff; color:#2563eb; }
+  .file-badge.xls { background:#ecfdf5; color:#059669; }
+  .file-badge.doc { background:#faf5ff; color:#7c3aed; }
+
+  /* ── PDF 뷰어 ── */
+  .pdf-viewer { border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#f9fafb; }
+  .pdf-viewer iframe { width:100%; height:50vh; border:none; display:block; }
+  .pdf-placeholder { display:flex; align-items:center; justify-content:center; height:50vh; color:var(--muted); font-size:14px; }
+
+  /* ── 이력 테이블 ── */
+  .rev-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .rev-table th { background:#f1f5f9; font-weight:600; text-align:left; padding:8px 10px; border-bottom:2px solid var(--border); }
+  .rev-table td { padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  .rev-table tr:hover { background:#f8fafc; }
+  .rev-table .btn-sm { padding:3px 8px; font-size:11px; }
+  .rev-current { background:#f0fdf4 !important; }
+
+  /* ── 검색 ── */
+  .ql-search { display:flex; gap:8px; }
+  .ql-search input { flex:1; }
+  .search-dropdown { position:relative; }
+  .search-results { position:absolute; top:100%; left:0; right:0; background:var(--card); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.1); max-height:200px; overflow-y:auto; z-index:100; display:none; }
+  .search-results.show { display:block; }
+  .search-results .sr-item { padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px; }
+  .search-results .sr-item:hover { background:#f1f5f9; }
+  .search-results .sr-item strong { color:var(--primary); }
+
+  /* ── 상신 모달 ── */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.show { display:flex; }
+  .modal-box { background:var(--card); border-radius:12px; padding:24px; width:90%; max-width:500px; box-shadow:0 8px 30px rgba(0,0,0,.15); }
+  .modal-box h3 { margin:0 0 14px 0; }
+
+  @media (max-width:768px) {
+    .ql-wrap { flex-direction:column; }
+    .ql-sidebar { width:100%; }
+    .tree-box { max-height:35vh; }
+    .pdf-viewer iframe { height:35vh; }
+  }
+</style>
+
+<div class="card" style="margin-bottom:12px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+    <h2 style="margin:0;">품질문서 라이브러리</h2>
+    <div style="display:flex; gap:8px;">
+      <button class="btn primary" onclick="openReviseModal()">+ 재개정 상신</button>
+      <a class="btn ghost" href="/quality">결재 문서 목록</a>
+    </div>
+  </div>
+</div>
+
+<!-- 검색 바 -->
+<div class="card" style="margin-bottom:12px;">
+  <div class="search-dropdown">
+    <div class="ql-search">
+      <input type="text" id="qSearch" placeholder="문서번호 또는 제목으로 검색..." autocomplete="off"
+             oninput="debounceSearch()" onkeydown="if(event.key==='Enter')doSearch()">
+      <button class="btn primary" onclick="doSearch()">검색</button>
+    </div>
+    <div class="search-results" id="searchResults"></div>
+  </div>
+</div>
+
+<div class="ql-wrap">
+  <!-- ★ 좌측: NAS 폴더 트리 -->
+  <div class="ql-sidebar">
+    <div class="card" style="padding:10px;">
+      <h4 style="margin:0 0 6px 0; font-size:13px; color:var(--muted);">NAS 폴더 구조</h4>
+      <div class="tree-box">
+        <div class="tree">
+          {% macro render_tree(nodes) %}
+          <ul>
+            {% for node in nodes %}
+            <li>
+              {% if node.is_dir %}
+                <div class="tree-toggle" onclick="this.classList.toggle('open'); this.nextElementSibling.classList.toggle('open');">
+                  <span class="arrow">▶</span> {{ node.name }}
+                </div>
+                <div class="children">{{ render_tree(node.children) }}</div>
+              {% else %}
+                {% set ext = node.ext %}
+                {% set badge_cls = 'pdf' if ext=='.pdf' else ('hwp' if ext in ['.hwp','.hwpx'] else ('xls' if ext in ['.xls','.xlsx','.xlsm'] else ('doc' if ext in ['.doc','.docx'] else ''))) %}
+                <div class="tree-file" data-path="{{ node.rel_path }}" data-ext="{{ ext }}" data-name="{{ node.name }}"
+                     onclick="onTreeFileClick(this)">
+                  <span class="file-badge {{ badge_cls }}">{{ ext[1:] if ext else '?' }}</span>
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ node.name }}">{{ node.name }}</span>
+                </div>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endmacro %}
+          {% if tree|length > 0 %}
+            {{ render_tree(tree) }}
+          {% else %}
+            <div class="muted" style="padding:12px; font-size:13px;">NAS 마운트가 비어있거나 연결되지 않았습니다.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ★ 우측: PDF 뷰어 + 이력 -->
+  <div class="ql-main">
+    <!-- PDF 미리보기 -->
+    <div class="card" style="padding:0; overflow:hidden;" id="viewerCard">
+      <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+        <h3 style="margin:0; font-size:14px;" id="viewerTitle">PDF 미리보기</h3>
+        <div style="display:flex; gap:6px;" id="viewerActions">
+          <a class="btn ghost btn-sm" id="btnDownload" href="#" style="display:none;">다운로드</a>
+        </div>
+      </div>
+      <div class="pdf-viewer" id="pdfViewer">
+        <div class="pdf-placeholder" id="pdfPlaceholder">좌측 트리에서 문서를 선택하거나 검색하세요</div>
+        <iframe id="pdfFrame" style="display:none;"></iframe>
+      </div>
+    </div>
+
+    <!-- 재개정 이력 테이블 -->
+    <div class="card" id="historyCard">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0;" id="historyTitle">재개정 이력</h3>
+        <span class="muted" id="historyDocNo" style="font-size:13px;"></span>
+      </div>
+      <div id="historyEmpty" class="muted" style="padding:16px 0; text-align:center;">
+        문서를 선택하면 이력이 표시됩니다.
+      </div>
+      <div class="table-responsive" id="historyTableWrap" style="display:none;">
+        <table class="rev-table">
+          <thead>
+            <tr>
+              <th style="width:50px;">Rev</th>
+              <th>제목</th>
+              <th style="width:80px;">상태</th>
+              <th style="width:100px;">등록자</th>
+              <th style="width:100px;">날짜</th>
+              <th style="width:180px;">액션</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 최근 전체 이력 -->
+    <div class="card">
+      <h3 style="margin:0 0 10px 0;">최근 품질문서 이력 (전체)</h3>
+      {% if quality_docs|length > 0 %}
+      <div class="table-responsive">
+        <table class="rev-table">
+          <thead><tr><th>문서번호</th><th>제목</th><th>Rev</th><th>상태</th><th>날짜</th></tr></thead>
+          <tbody>
+          {% for qd in quality_docs %}
+            <tr style="cursor:pointer;" onclick="loadHistory('{{ qd.doc_no }}')">
+              <td><strong>{{ qd.doc_no }}</strong></td>
+              <td>{{ qd.title }}</td>
+              <td>{{ qd.rev_no }}</td>
+              <td>
+                {% if qd.status == 'ACTIVE' %}<span class="badge badge-green">현행</span>
+                {% elif qd.status == 'PENDING' %}<span class="badge badge-amber">결재중</span>
+                {% elif qd.status == 'SUPERSEDED' %}<span class="badge">구버전</span>
+                {% elif qd.status == 'REJECTED' %}<span class="badge badge-red">반려</span>
+                {% else %}<span class="badge">{{ qd.status }}</span>{% endif %}
+              </td>
+              <td class="muted">{{ qd.updated_at.strftime('%Y-%m-%d') if qd.updated_at else '' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+        <div class="muted">등록된 품질문서 이력이 없습니다.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ★ 재개정 상신 모달 -->
+<div class="modal-overlay" id="reviseModal">
+  <div class="modal-box">
+    <h3>품질문서 재개정 상신</h3>
+    <form method="post" action="/quality/revise" enctype="multipart/form-data">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        <div style="flex:1; min-width:150px;">
+          <label>문서번호</label>
+          <input type="text" name="doc_no" id="reviseDocNo" required placeholder="예: QP-01-03">
+        </div>
+        <div style="flex:1; min-width:150px;">
+          <label>제목</label>
+          <input type="text" name="title" id="reviseTitle" placeholder="예: 품질매뉴얼 제3판">
+        </div>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label>NAS 원본 경로 (참고용)</label>
+        <input type="text" name="original_path" id="reviseOrigPath" placeholder="예: 품질매뉴얼/QP-01-03.pdf">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label>개정 파일 업로드</label>
+        <input type="file" name="file" required>
+        <div class="muted" style="font-size:12px;">새 리비전 파일을 첨부하세요</div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" class="btn ghost" onclick="closeReviseModal()">취소</button>
+        <button type="submit" class="btn primary">상신</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+/* ── 트리 파일 클릭 ── */
+let currentTreeFile = null;
+function onTreeFileClick(el) {
+  document.querySelectorAll('.tree-file.active').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  currentTreeFile = el;
+
+  const path = el.dataset.path;
+  const ext = el.dataset.ext;
+  const name = el.dataset.name;
+
+  if (ext === '.pdf') {
+    showPdf(`/quality/file/view?path=${encodeURIComponent(path)}`, name);
+  } else {
+    showPdfPlaceholder(`"${name}" 은 PDF가 아닙니다. 다운로드로 확인하세요.`);
+  }
+  document.getElementById('btnDownload').href = `/quality/file/download?path=${encodeURIComponent(path)}`;
+  document.getElementById('btnDownload').style.display = '';
+
+  /* 파일명에서 문서번호 추론 → 이력 자동 로드 */
+  const docNoGuess = guessDocNo(name);
+  if (docNoGuess) loadHistory(docNoGuess);
+}
+
+function guessDocNo(filename) {
+  const base = filename.replace(/\.[^.]+$/, '');
+  /* _RevN_날짜 같은 접미어 제거 */
+  return base.replace(/_Rev\d+.*$/, '').replace(/_v\d+.*$/, '').trim();
+}
+
+/* ── PDF 뷰어 제어 ── */
+function showPdf(url, title) {
+  document.getElementById('pdfPlaceholder').style.display = 'none';
+  const frame = document.getElementById('pdfFrame');
+  frame.src = url;
+  frame.style.display = 'block';
+  document.getElementById('viewerTitle').textContent = title || 'PDF 미리보기';
+}
+
+function showPdfPlaceholder(msg) {
+  document.getElementById('pdfFrame').style.display = 'none';
+  document.getElementById('pdfFrame').src = '';
+  const ph = document.getElementById('pdfPlaceholder');
+  ph.textContent = msg || '좌측 트리에서 문서를 선택하거나 검색하세요';
+  ph.style.display = 'flex';
+}
+
+/* ── 이력 로드 ── */
+async function loadHistory(docNo) {
+  if (!docNo) return;
+  document.getElementById('historyDocNo').textContent = docNo;
+  document.getElementById('historyTitle').textContent = `재개정 이력 — ${docNo}`;
+
+  try {
+    const res = await fetch(`/api/quality/history?doc_no=${encodeURIComponent(docNo)}`);
+    const data = await res.json();
+    const items = data.items || [];
+    const tbody = document.getElementById('historyBody');
+    const wrap = document.getElementById('historyTableWrap');
+    const empty = document.getElementById('historyEmpty');
+
+    if (items.length === 0) {
+      wrap.style.display = 'none';
+      empty.style.display = '';
+      empty.textContent = `"${docNo}" 에 대한 이력이 없습니다.`;
+      return;
+    }
+
+    empty.style.display = 'none';
+    wrap.style.display = '';
+    tbody.innerHTML = '';
+
+    items.forEach(r => {
+      const isCurrent = r.status === 'ACTIVE';
+      const statusBadge = {
+        'ACTIVE':     '<span class="badge badge-green">현행</span>',
+        'PENDING':    '<span class="badge badge-amber">결재중</span>',
+        'SUPERSEDED': '<span class="badge">구버전</span>',
+        'REJECTED':   '<span class="badge badge-red">반려</span>',
+      }[r.status] || `<span class="badge">${r.status}</span>`;
+
+      let actions = '';
+      if (r.has_pdf) {
+        actions += `<button class="btn ghost btn-sm" onclick="showRevisionPdf(${r.id}, '${r.doc_no} Rev.${r.rev_no}')">PDF 보기</button> `;
+      }
+      if (r.has_archive || r.document_id) {
+        actions += `<a class="btn ghost btn-sm" href="/quality/archive/download?qd_id=${r.id}">원본↓</a> `;
+      }
+      if (r.document_id) {
+        actions += `<a class="btn ghost btn-sm" href="/doc/${r.document_id}" target="_blank">결재</a>`;
+      }
+
+      const tr = document.createElement('tr');
+      if (isCurrent) tr.className = 'rev-current';
+      tr.innerHTML = `
+        <td><strong>Rev.${r.rev_no}</strong></td>
+        <td>${r.title}${r.original_filename ? '<br><span class="muted" style="font-size:11px;">📎 '+r.original_filename+'</span>' : ''}</td>
+        <td>${statusBadge}</td>
+        <td>${r.uploader || '-'}</td>
+        <td class="muted">${r.created_at}</td>
+        <td>${actions || '<span class="muted">-</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch(e) {
+    console.error('history load error', e);
+  }
+}
+
+/* 이력 테이블에서 특정 리비전 PDF 보기 */
+function showRevisionPdf(qdId, label) {
+  showPdf(`/quality/revision/pdf?qd_id=${qdId}`, label);
+}
+
+/* ── 검색 ── */
+let searchTimer = null;
+function debounceSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(doSearch, 350);
+}
+
+async function doSearch() {
+  const q = document.getElementById('qSearch').value.trim();
+  const box = document.getElementById('searchResults');
+  if (!q) { box.classList.remove('show'); return; }
+  try {
+    const res = await fetch(`/api/quality/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    const groups = data.groups || [];
+    if (groups.length === 0) {
+      box.innerHTML = '<div class="sr-item" style="color:var(--muted);">결과 없음</div>';
+      box.classList.add('show');
+      return;
+    }
+    box.innerHTML = groups.map(g =>
+      `<div class="sr-item" onclick="selectSearchResult('${g.doc_no}')"><strong>${g.doc_no}</strong> — ${g.title}</div>`
+    ).join('');
+    box.classList.add('show');
+  } catch(e) { console.error(e); }
+}
+
+function selectSearchResult(docNo) {
+  document.getElementById('searchResults').classList.remove('show');
+  document.getElementById('qSearch').value = docNo;
+  loadHistory(docNo);
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-dropdown')) {
+    document.getElementById('searchResults').classList.remove('show');
+  }
+});
+
+/* ── 재개정 상신 모달 ── */
+function openReviseModal(docNo, origPath) {
+  document.getElementById('reviseModal').classList.add('show');
+  if (docNo) document.getElementById('reviseDocNo').value = docNo;
+  if (origPath) document.getElementById('reviseOrigPath').value = origPath;
+}
+function closeReviseModal() {
+  document.getElementById('reviseModal').classList.remove('show');
+}
+document.getElementById('reviseModal').addEventListener('click', function(e) {
+  if (e.target === this) closeReviseModal();
+});
+
+/* ── 초기: URL 파라미터에 doc_no 있으면 자동 로드 ── */
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const docNo = params.get('doc_no');
+  if (docNo) loadHistory(docNo);
+})();
+</script>
+{% endblock %}

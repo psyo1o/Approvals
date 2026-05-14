@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:680px;">
+  <h3>내 정보</h3>
+  <form method="post" action="/me">
+    <div class="row">
+      <div style="flex:1; min-width:200px;">
+        <label>이름</label>
+        <input name="name" value="{{ user.name }}">
+      </div>
+      <div style="flex:1; min-width:200px;">
+        <label>부서</label>
+        <input name="dept" value="{{ user.dept }}">
+      </div>
+      <div style="flex:1; min-width:200px;">
+        <label>직급</label>
+        <input name="grade" value="{{ user.grade }}">
+      </div>
+    </div>
+    
+    <div style="margin-top:16px;">
+      <label>부재중 대결자 (위임)</label>
+      <select name="delegate_id">
+        <option value="">-- 미지정 --</option>
+        {% for u in users %}
+        <option value="{{ u.id }}" {% if user.delegate_id == u.id %}selected{% endif %}>{{ u.name }} ({{ u.grade }})</option>
+        {% endfor %}
+      </select>
+      <div class="muted" style="margin-top:4px; font-size:12px;">휴가나 부재 시 나 대신 결재할 사람을 지정합니다.</div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <button class="btn" type="submit">저장</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

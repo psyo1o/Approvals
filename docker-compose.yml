@@ -1,0 +1,17 @@
+services:
+  approval:
+    build: .
+    container_name: approval_mvp
+    ports:
+      - "8080:8000"
+    environment:
+      TZ: Asia/Seoul
+      APP_SECRET: ${APP_SECRET}
+      APP_ADMIN_ID: ${APP_ADMIN_ID}
+      APP_ADMIN_PW: ${APP_ADMIN_PW}
+      QUALITY_NAS_ROOT: "/nas_quality"
+    volumes:
+      - ./app:/app
+      - ./data:/data
+      - "/volume1/품질문서/(주)영동환경이앤텍 품질문서:/nas_quality:ro"
+    restart: unless-stopped

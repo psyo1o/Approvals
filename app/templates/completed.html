@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>완료 문서 검색</h2>
+  <p class="hint">
+    검색 대상: <b>문서번호</b> / <b>제목</b> / <b>상신자</b><br>
+    완료 상태: APPROVED_FINAL / FINAL_LOCKED
+  </p>
+  <form method="get" action="/completed" style="display:grid;grid-template-columns:1fr 1fr 1fr 160px 160px;gap:8px;align-items:center">
+     <input name="doc_no" value="{{doc_no}}" placeholder="문서번호" class="input-sm">
+     <input name="title" value="{{title}}" placeholder="제목" class="input-sm">
+     <input name="submitter" value="{{submitter}}" placeholder="상신자" class="input-sm">
+     <input type="date" name="start" value="{{start}}" class="input-sm">
+     <input type="date" name="end" value="{{end}}" class="input-sm">
+  </form>
+  <p class="hint">날짜 필터는 <b>최종 승인일</b>(결재완료일) 기준입니다.</p>
+
+  <table>
+    <thead>
+      <tr><th>문서번호</th><th>Rev</th><th>제목</th><th>상신자</th><th>상태</th><th>최종결재</th><th>최종PDF</th></tr>
+    </thead>
+    <tbody>
+    {% for d in docs %}
+      <tr>
+        <td><a href="/doc/{{d.id}}">{{d.doc_no}}</a></td>
+        <td>{{d.rev}}</td>
+        <td>{{d.title}}</td>
+        <td>{{d.submitter.name}}</td>
+        <td><span class="badge">{{d.status}}</span></td>
+        <td>{% if d.final_approver %}{{d.final_approver.name}}{% else %}-{% endif %}</td>
+        <td>
+          {% if d.final_path %}
+            <a href="/doc/{{d.id}}/pdf" target="_blank">PDF 다운로드</a>
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    {% if docs|length == 0 %}
+      <tr><td colspan="7" style="color:#777">검색 결과가 없습니다.</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h3>직급 관리</h3>
+  <div class="muted" style="margin-bottom:10px;">
+    <a href="/dashboard">대시보드</a> · <a href="/admin/users">사용자관리</a>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0;">직급 추가</h4>
+    <form method="post" action="/admin/grades/add">
+      <div class="row">
+        <div style="flex:1; min-width:220px;">
+          <label>직급명</label>
+          <input name="name" required placeholder="예: 과장">
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <button class="btn" type="submit">추가</button>
+      </div>
+    </form>
+  </div>
+
+  <h4>목록</h4>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>직급명</th><th>활성</th><th>작업</th></tr>
+    </thead>
+    <tbody>
+      {% for g in grades %}
+      <tr>
+        <td>{{g.id}}</td>
+        <td>{{g.name}}</td>
+        <td>{{"Y" if g.is_active else ""}}</td>
+        <td>
+          {% if g.is_active %}
+          <form method="post" action="/admin/grades/{{g.id}}/delete" style="display:inline" onsubmit="return confirm('비활성화할까요? (해당 직급을 가진 사용자 직급은 빈칸 처리됩니다)');">
+            <button class="btn" type="submit">삭제</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/grades/{{g.id}}/restore" style="display:inline">
+            <button class="btn" type="submit">복구</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

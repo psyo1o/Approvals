@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row items-center mb-6" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem;">
+  <div>
+    <a href="/messages" class="btn ghost btn-sm" style="margin-bottom: 0.5rem; display: inline-block;">&larr; 쪽지함</a>
+    <h2 style="margin: 0; font-size: 1.5rem; color: var(--text);">쪽지 확인</h2>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+    <div>
+      <div style="margin-bottom: 0.5rem;">
+        <span style="font-weight: 600; color: var(--muted); width: 60px; display: inline-block;">보낸이:</span>
+        <span style="font-weight: 500; color: var(--text);">{{ msg.sender.name if msg.sender else '알수없음' }} ({{ msg.sender.dept if msg.sender else '' }} {{ msg.sender.grade if msg.sender else '' }})</span>
+      </div>
+      <div>
+        <span style="font-weight: 600; color: var(--muted); width: 60px; display: inline-block;">받는이:</span>
+        <span style="font-weight: 500; color: var(--text);">{{ msg.receiver.name if msg.receiver else '알수없음' }} ({{ msg.receiver.dept if msg.receiver else '' }} {{ msg.receiver.grade if msg.receiver else '' }})</span>
+      </div>
+    </div>
+    <div style="color: var(--muted); font-size: 0.875rem; text-align: right;">
+      <div>보낸시간: {{ msg.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+      <div style="margin-top: 0.25rem; {{ 'color: #10b981;' if msg.read_at else 'color: var(--danger);' }}">
+        읽은시간: {{ msg.read_at.strftime('%Y-%m-%d %H:%M:%S') if msg.read_at else '아직 읽지 않음' }}
+      </div>
+    </div>
+  </div>
+
+  <div style="min-height: 200px; white-space: pre-wrap; line-height: 1.6; color: var(--text); padding: 1rem; background: #f9fafb; border-radius: 8px; border: 1px solid var(--border);">
+    {{ msg.content }}
+  </div>
+</div>
+
+<div style="text-align: center;">
+  <a href="/messages" class="btn primary" style="padding: 0.5rem 2rem;">목록으로</a>
+</div>
+{% endblock %}

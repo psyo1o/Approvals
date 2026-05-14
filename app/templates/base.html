@@ -1,0 +1,416 @@
+{% set title = title or "(주)영동환경이앤텍 결재 시스템" %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+	  <style>
+	  :root{
+	  --bg:#e9edf2;
+	  --card:#ffffff;
+	  --text:#111827;
+	  --muted:#6b7280;
+	  --border:#e5e7eb;
+	  --primary:#2563eb;
+	  --primary-hover:#1d4ed8;
+	  --danger:#dc2626;
+	  --danger-hover:#b91c1c;
+	  --input:#ffffff;
+	}
+
+	*{box-sizing:border-box}
+	body{
+	  margin:0;
+	  background:var(--bg);
+	  color:var(--text);
+	  font-family: system-ui, -apple-system, Segoe UI, Roboto, Apple SD Gothic Neo, "Noto Sans KR", sans-serif;
+	  line-height:1.4;
+	}
+
+	a{color:var(--primary); text-decoration:none}
+	a:hover{text-decoration:underline}
+
+	.container{
+	  max-width:980px;
+	  margin:32px auto;   /* 24 → 32 */
+	  padding:0 16px;
+	}
+
+	.card{
+	  background:var(--card);
+	  border:1px solid var(--border);
+	  border-radius:12px;
+	  padding:16px;
+	  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+	}
+
+	h1,h2,h3{margin:0 0 12px 0}
+	.muted{color:var(--muted)}
+
+	input, select, textarea{
+	  width:100%;
+	  padding:10px 12px;
+	  border:1px solid var(--border);
+	  border-radius:10px;
+	  background:var(--input);
+	  color:var(--text);
+	  outline:none;
+	}
+	input:focus, select:focus, textarea:focus{
+	  border-color:rgba(37,99,235,.6);
+	  box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+	}
+
+	.btn{
+	  display:inline-flex;
+	  align-items:center;
+	  justify-content:center;
+	  gap:8px;
+	  padding:10px 14px;
+	  border-radius:10px;
+	  border:1px solid transparent;
+	  background:var(--primary);
+	  color:#fff;
+	  cursor:pointer;
+	  font-weight:600;
+	}
+	.btn:hover{background:var(--primary-hover)}
+	.btn:disabled{opacity:.6; cursor:not-allowed}
+
+	.btn-secondary{
+	  background:#fff;
+	  color:var(--text);
+	  border-color:var(--border);
+	}
+	.btn-secondary:hover{background:#f3f4f6}
+
+	.btn-danger{
+	  background:var(--danger);
+	}
+	.btn-danger:hover{background:var(--danger-hover)}
+
+	table{
+	  width:100%;
+	  border-collapse:collapse;
+	  background:var(--card);
+	  border:1px solid var(--border);
+	  border-radius:12px;
+	  overflow:hidden;
+	}
+	th,td{
+	  padding:10px 12px;
+	  border-bottom:1px solid var(--border);
+	  text-align:left;
+	}
+	th{
+	  background:#f3f4f6;
+	  color:#374151;
+	  font-weight:700;
+	}
+	tr:last-child td{border-bottom:none}
+
+	.badge{
+	  display:inline-flex;
+	  padding:4px 10px;
+	  border-radius:999px;
+	  font-size:12px;
+	  border:1px solid var(--border);
+	  background:#f9fafb;
+	  color:#374151;
+	}
+	
+	button:disabled,
+	.btn:disabled {
+	  background:#e5e7eb;     /* 연회색 */
+	  color:#9ca3af;          /* 회색 글자 */
+	  border-color:#e5e7eb;
+	  cursor:not-allowed;
+	  opacity:1;              /* 기존 opacity 낮추는 것 방지 */
+	}
+	
+	.btn {
+	  display:inline-flex;
+	  align-items:center;
+	  justify-content:center;
+	  padding:8px 14px;
+	  border-radius:8px;
+	  border:1px solid transparent;
+	  font-weight:600;
+	  cursor:pointer;
+	}
+
+	.btn.primary {
+	  background:var(--primary);
+	  color:#fff;
+	}
+
+	.btn.danger {
+	  background:var(--danger);
+	  color:#fff;
+	}
+
+	.btn.ghost {
+	  background:#fff;
+	  color:#374151;
+	  border:1px solid var(--border);
+	}
+
+	button:disabled,
+	.btn:disabled {
+	  background:#e5e7eb;
+	  color:#9ca3af;
+	  border-color:#e5e7eb;
+	  cursor:not-allowed;
+	  opacity:1;
+	}
+
+	
+	.badge-ok{background:#ecfdf5; border-color:#a7f3d0; color:#065f46;}
+	.badge-warn{background:#fff7ed; border-color:#fed7aa; color:#9a3412;}
+	.badge-bad{background:#fef2f2; border-color:#fecaca; color:#991b1b;}
+	
+	/* 상단 메뉴 여백 + 분리감 */
+	.topbar{
+	  padding: 12px 0;              /* 위아래 여백 */
+	  background: var(--card);       /* 흰색 바 */
+	  border-bottom: 1px solid var(--border);
+	}
+
+	.topbar .topbar-inner{
+	  margin: 0 auto;                /* 헤더는 컨테이너 margin 영향 안 받게 */
+	  padding: 0 16px;               /* 좌우 여백 */
+	}
+
+	/* 메뉴 링크들이 너무 딱 붙으면 */
+	.nav{
+	  display:flex;
+	  align-items:center;
+	  gap: 12px;
+	}
+
+	/* 브랜드/메뉴 정렬 */
+	.topbar-inner{
+	  display:flex;
+	  align-items:center;
+	  justify-content:space-between;
+	}
+
+	/* 작은 입력/드롭다운 */
+	.input-sm, select.input-sm, input.input-sm {
+	  width: auto;
+	  min-width: 180px;
+	  padding: 6px 10px;
+	  border-radius: 8px;
+	  font-size: 14px;
+	}
+
+	/* 테이블 가로 스크롤 래퍼 */
+	.table-responsive { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+
+	/* 햄버거 토글 버튼 (기본 숨김) */
+	.nav-toggle { display:none; background:none; border:none; color:var(--text); cursor:pointer; padding:4px; }
+	.nav-toggle svg { display:block; }
+
+	/* ───── 모바일 반응형 (768px 이하) ───── */
+	@media (max-width: 768px) {
+	  .container { padding:0 10px; margin:12px auto; }
+	  .topbar-inner { flex-wrap:wrap; }
+	  .nav-toggle { display:block; }
+
+	  .nav {
+	    display:none;
+	    flex-direction:column;
+	    width:100%;
+	    gap:4px;
+	    padding-top:8px;
+	  }
+	  .nav.open { display:flex; }
+	  .nav a, .nav .btn { width:100%; text-align:left; padding:8px 6px; }
+
+	  .card { padding:10px; border-radius:10px; }
+	  h2 { font-size:18px; }
+
+	  table { font-size:13px; }
+	  th, td { padding:7px 6px; }
+
+	  .grid { grid-template-columns:1fr !important; }
+	  .form-row-inline { flex-direction:column; }
+	}
+
+	/* ───── 480px 이하 (극소형) ───── */
+	@media (max-width: 480px) {
+	  .brand { font-size:14px; }
+	  .btn { padding:7px 10px; font-size:13px; }
+	  .input-sm, select.input-sm, input.input-sm { min-width:120px; }
+	}
+
+	/* ───── 알림 팝업 드롭다운 ───── */
+	.noti-popup {
+	  position:absolute; top:calc(100% + 8px); right:0; width:340px;
+	  background:var(--card); border:1px solid var(--border); border-radius:12px;
+	  box-shadow:0 8px 30px rgba(0,0,0,.15); z-index:9999; overflow:hidden;
+	}
+	.noti-popup-header {
+	  display:flex; justify-content:space-between; align-items:center;
+	  padding:12px 14px; border-bottom:1px solid var(--border); background:#f8fafc;
+	}
+	.noti-popup-header strong { font-size:14px; }
+	.noti-readall {
+	  background:none; border:none; color:var(--primary); cursor:pointer;
+	  font-size:12px; font-weight:600; padding:2px 6px; border-radius:4px;
+	}
+	.noti-readall:hover { background:rgba(37,99,235,.08); }
+	.noti-popup-list { max-height:320px; overflow-y:auto; }
+	.noti-item {
+	  display:block; padding:10px 14px; border-bottom:1px solid var(--border);
+	  text-decoration:none; color:var(--text); font-size:13px; cursor:pointer;
+	  transition:background .1s;
+	}
+	.noti-item:hover { background:#f1f5f9; text-decoration:none; }
+	.noti-item.unread { background:#eff6ff; }
+	.noti-item.unread:hover { background:#dbeafe; }
+	.noti-item .noti-title { line-height:1.4; }
+	.noti-item .noti-time { font-size:11px; color:var(--muted); margin-top:2px; }
+	.noti-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--primary); margin-right:6px; flex-shrink:0; vertical-align:middle; }
+	.noti-empty { padding:30px 14px; text-align:center; color:var(--muted); font-size:13px; }
+	.noti-popup-footer {
+	  display:block; text-align:center; padding:10px; border-top:1px solid var(--border);
+	  font-size:12px; font-weight:600; color:var(--primary); text-decoration:none;
+	}
+	.noti-popup-footer:hover { background:#f8fafc; text-decoration:none; }
+
+	@media (max-width:480px) {
+	  .noti-popup { width:calc(100vw - 20px); right:-60px; }
+	}
+
+	</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="/dashboard">(주)영동환경이앤텍 결재 시스템</a>
+      <button class="nav-toggle" onclick="document.querySelector('.nav').classList.toggle('open')" aria-label="메뉴">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+      <nav class="nav">
+        {% if user %}
+		  <a href="/dashboard">문서</a>
+		  <a href="/completed">완료문서</a>
+		  <a href="/boards">게시판</a>
+		  <a href="/messages">쪽지</a>
+		  <a href="/quality/library">품질문서</a>
+		  <a href="/calendar">일정</a>
+		  <a href="/org">조직도</a>
+		  <a href="/me">내 정보</a>
+
+          <!-- 알림 종모양 + 팝업 드롭다운 -->
+          <div class="noti-wrap" style="position:relative;">
+            <button id="notiBtn" onclick="toggleNotiPopup()" style="position:relative; display:flex; align-items:center; background:none; border:none; color:var(--muted); cursor:pointer; padding:6px; border-radius:50%;" title="알림">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span id="noti-badge" style="display:none; position:absolute; top:-2px; right:-4px; background:var(--danger); color:#fff; font-size:10px; font-weight:700; border-radius:9999px; padding:1px 5px; min-width:16px; text-align:center; border:2px solid var(--card);">0</span>
+            </button>
+
+            <div id="notiPopup" class="noti-popup" style="display:none;">
+              <div class="noti-popup-header">
+                <strong>알림</strong>
+                <button onclick="readAllNoti()" class="noti-readall">전체 읽음</button>
+              </div>
+              <div id="notiList" class="noti-popup-list">
+                <div class="noti-empty">알림이 없습니다</div>
+              </div>
+              <a href="/notifications" class="noti-popup-footer">전체 알림 보기</a>
+            </div>
+          </div>
+
+          {% if user.is_admin %}
+            <a href="/admin/users">사용자</a>
+          {% endif %}
+          <a class="btn ghost" href="/logout">로그아웃</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% if flash %}<div class="alert">{{ flash }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <div class="container muted">© ydenv</div>
+  </footer>
+
+  <script>
+  /* ── 알림 팝업 ── */
+  let notiOpen = false;
+
+  function toggleNotiPopup() {
+    const popup = document.getElementById('notiPopup');
+    notiOpen = !notiOpen;
+    popup.style.display = notiOpen ? 'block' : 'none';
+    if (notiOpen) loadNotiList();
+  }
+
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.noti-wrap')) {
+      document.getElementById('notiPopup').style.display = 'none';
+      notiOpen = false;
+    }
+  });
+
+  function loadNotiList() {
+    fetch('/api/notifications/list')
+      .then(r => r.json())
+      .then(data => {
+        const box = document.getElementById('notiList');
+        const items = data.items || [];
+        if (items.length === 0) {
+          box.innerHTML = '<div class="noti-empty">알림이 없습니다</div>';
+          return;
+        }
+        box.innerHTML = items.map(n => {
+          const cls = n.is_read ? 'noti-item' : 'noti-item unread';
+          const dot = n.is_read ? '' : '<span class="noti-dot"></span>';
+          return `<a class="${cls}" href="#" onclick="clickNoti(event, ${n.id}, '${(n.link||'').replace(/'/g,"\\'")}')">
+            <div class="noti-title">${dot}${n.title}</div>
+            <div class="noti-time">${n.created_at}</div>
+          </a>`;
+        }).join('');
+      }).catch(console.error);
+  }
+
+  function clickNoti(e, id, link) {
+    e.preventDefault();
+    fetch('/api/notifications/read/' + id, {method:'POST'}).then(() => {
+      updateNotiCount();
+      if (link) window.location.href = link;
+    });
+  }
+
+  function readAllNoti() {
+    fetch('/api/notifications/read_all', {method:'POST'}).then(() => {
+      updateNotiCount();
+      loadNotiList();
+    });
+  }
+
+  function updateNotiCount() {
+    fetch('/api/notifications/count')
+      .then(r => r.json())
+      .then(data => {
+        const badge = document.getElementById('noti-badge');
+        if (data && data.count > 0) {
+          badge.innerText = data.count > 99 ? '99+' : data.count;
+          badge.style.display = 'block';
+        } else {
+          badge.style.display = 'none';
+        }
+      }).catch(console.error);
+  }
+  updateNotiCount();
+  setInterval(updateNotiCount, 30000);
+  </script>
+</body>
+</html>

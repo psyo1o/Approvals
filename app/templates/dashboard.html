@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="row" style="justify-content:space-between;align-items:center;">
+    <div>
+      <h2 style="margin:0;">대시보드</h2>
+      <div class="muted">내 문서 / 결재 문서 목록</div>
+    </div>
+    <div class="row">
+      <a class="btn" href="/doc/new">+ 새 문서</a>
+    </div>
+  </div>
+
+  {% if flash %}
+    <div class="flash">{{ flash }}</div>
+  {% endif %}
+
+  <div style="margin-top:12px; overflow:auto;">
+    <form method="post" action="/doc/batch_approve" id="batchApproveForm">
+      <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+        <span></span>
+        <button type="button" class="btn primary small" onclick="submitBatchApprove()">선택 일괄 결재(승인)</button>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:40px;"><input type="checkbox" id="selectAll" onclick="toggleAll()"></th>
+            <th style="width:110px;">구분</th>
+            <th style="width:160px;">문서번호</th>
+            <th>제목</th>
+            <th style="width:120px;">결재상태</th>
+            <th style="width:160px;">작성일</th>
+            <th style="width:80px;">열기</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for d in docs %}
+          <tr>
+            <td>
+              {% if d.id in approvable_docs %}
+                <input type="checkbox" name="doc_ids" value="{{ d.id }}" class="doc-chk">
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>
+              {% if d.doc_type == "QUALITY" %}
+                <span class="badge badge-blue">품질문서</span>
+              {% elif d.doc_type == "LEAVE" %}
+                <span class="pill">휴가신청</span>
+              {% elif d.doc_type == "EXPENSE" %}
+                <span class="badge badge-green">지출결의</span>
+              {% else %}
+                <span class="pill">일반기안</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if d.doc_type == "QUALITY" and d.doc_no %}
+                <strong>{{ d.doc_no }}</strong> Rev.{{ d.rev }}
+              {% else %}
+                <span class="muted">-</span>
+              {% endif %}
+            </td>
+            <td style="word-break:break-word;">
+              <strong>{{ d.title }}</strong>
+            </td>
+            <td>
+              {% if d.status == "DRAFT" %}
+                <span class="badge">작성중</span>
+              {% elif d.status == "SUBMITTED" or d.status == "IN_REVIEW" %}
+                <span class="badge badge-amber">결재중</span>
+              {% elif d.status == "APPROVED" %}
+                <span class="badge badge-green">결재완료</span>
+              {% elif d.status == "REJECTED" %}
+                <span class="badge badge-red">반려</span>
+              {% else %}
+                <span class="badge">{{ d.status }}</span>
+              {% endif %}
+            </td>
+            <td class="muted">{{ d.created_at.strftime("%Y-%m-%d %H:%M") if d.created_at else "" }}</td>
+            <td><a class="btn btn-sm" href="/doc/{{ d.id }}">보기</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="muted">문서가 없습니다.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </form>
+  </div>
+</div>
+
+<script>
+  function toggleAll() {
+    const isChecked = document.getElementById('selectAll').checked;
+    const checkboxes = document.querySelectorAll('.doc-chk');
+    checkboxes.forEach(cb => cb.checked = isChecked);
+  }
+
+  function submitBatchApprove() {
+    const checkboxes = document.querySelectorAll('.doc-chk:checked');
+    if (checkboxes.length === 0) {
+      alert("일괄 결재할 문서를 선택해주세요.");
+      return;
+    }
+    if (confirm(`선택한 ${checkboxes.length}개의 문서를 일괄 승인하시겠습니까?`)) {
+      document.getElementById('batchApproveForm').submit();
+    }
+  }
+</script>
+{% endblock %}

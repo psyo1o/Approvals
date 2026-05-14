@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>문서 상세</h2>
+  <div class="small">문서번호: <b>{{ doc.doc_no }}</b> | 제출자: {{ submitter.name if submitter else '-' }} | 상태: <b>{{ doc.status }}</b></div>
+  <h3 style="margin-top:10px">{{ doc.title }}</h3>
+
+{% if doc.doc_type == "LEAVE" %}
+  <div class="card" style="margin-top:12px;">
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <div><b>휴가종류</b>: {{ doc.leave_kind or "-" }}</div>
+      <div><b>기간</b>: {{ doc.leave_start or "-" }} ~ {{ doc.leave_end or "-" }}</div>
+      {% if doc.leave_hours %}
+      <div><b>시간</b>: {{ doc.leave_hours }}</div>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}
+
+{% if doc.doc_type == "WORK_LOG" and worklog %}
+  <div class="card" style="margin-top:12px; background:#f8fafc;">
+    <h4 style="margin:0 0 10px 0;">업무일지 상세</h4>
+    <div style="margin-bottom:8px;"><b>업무일자:</b> {{ worklog.work_date or "-" }}</div>
+    {% if worklog.lines and worklog.lines|length > 0 %}
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr><th>#</th><th>소속팀</th><th>업체명</th><th>업무내용</th><th>차량km</th></tr>
+        </thead>
+        <tbody>
+        {% for line in worklog.lines %}
+          <tr>
+            <td>{{ line.order_no }}</td>
+            <td>{{ line.team_name or "-" }}</td>
+            <td>{{ line.company_name or "-" }}</td>
+            <td style="white-space:pre-wrap;">{{ line.task_content or "-" }}</td>
+            <td>{{ line.mileage or "-" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="muted">등록된 업무 행이 없습니다.</div>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if doc.doc_type == "TRIP_REPORT" and trip_report %}
+  <div class="card" style="margin-top:12px; background:#f8fafc;">
+    <h4 style="margin:0 0 10px 0;">출장복명서 상세</h4>
+    <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
+      <div><b>출장일자:</b> {{ trip_report.trip_date or "-" }}</div>
+      <div><b>출장지:</b> {{ trip_report.destination or "-" }}</div>
+      <div><b>목적:</b> {{ trip_report.purpose or "-" }}</div>
+    </div>
+    {% if trip_report.registration_file_path %}
+    <div style="margin-bottom:10px;">
+      <b>사업자등록증:</b>
+      <a href="/file/trip_registration/{{ trip_report.id }}" class="btn ghost" style="margin-left:6px;" download>다운로드</a>
+    </div>
+    {% endif %}
+    {% if trip_report.lines and trip_report.lines|length > 0 %}
+    <h4 style="margin:12px 0 6px 0;">세금계산서 내역</h4>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr><th>권</th><th>번호</th><th>날짜</th><th>업체명</th><th>내역</th><th>외상금액</th><th>현금금액</th></tr>
+        </thead>
+        <tbody>
+        {% for line in trip_report.lines %}
+          <tr>
+            <td>{{ line.volume_no or "-" }}</td>
+            <td>{{ line.doc_number or "-" }}</td>
+            <td>{{ line.line_date or "-" }}</td>
+            <td>{{ line.company_name or "-" }}</td>
+            <td>{{ line.details or "-" }}</td>
+            <td style="text-align:right;">{{ "{:,}".format(line.credit_amount) if line.credit_amount else "0" }}</td>
+            <td style="text-align:right;">{{ "{:,}".format(line.cash_amount) if line.cash_amount else "0" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5" style="text-align:right;font-weight:bold;">합계:</td>
+            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_report.lines|sum(attribute='credit_amount')) }}</td>
+            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_report.lines|sum(attribute='cash_amount')) }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {% else %}
+      <div class="muted">등록된 세금계산서 내역이 없습니다.</div>
+    {% endif %}
+  </div>
+{% endif %}
+
+  {% if doc.status == "DRAFT" and user and user.id == doc.creator_id %}
+  <div style="margin-top:10px">
+    <a class="btn primary" href="/doc/{{ doc.id }}/submit">결재선 지정 및 상신</a>
+  </div>
+  {% endif %}
+
+  <div style="margin-top:10px">
+    <a class="btn2" href="/file/original/{{ doc.id }}">원본 다운로드</a>
+    {% if doc.status == "APPROVED" %}
+      <a class="btn2" href="/preview/history/{{ doc.id }}" target="_blank">결재이력 미리보기</a>
+      <a class="btn2" href="/file/history/{{ doc.id }}">결재이력 다운로드</a>
+      <a class="btn2" href="/doc/{{ doc.id }}/pdf" target="_blank">PDF 다운로드</a>
+    {% endif %}
+  </div>
+
+  <div style="margin-top:12px">
+    <iframe src="/preview/original/{{ doc.id }}" style="width:100%; height:75vh; border:1px solid #e5e7eb; border-radius:12px;"></iframe>
+  </div>
+
+  {% if doc.attachments and doc.attachments|length > 0 %}
+  <div class="card" style="margin-top:18px;">
+    <h3 style="margin:0 0 8px 0;">첨부파일</h3>
+    <table>
+      <thead><tr><th>파일명</th><th>업로더</th><th>업로드일</th><th>다운로드</th></tr></thead>
+      <tbody>
+      {% for att in doc.attachments %}
+        <tr>
+          <td>{{ att.filename }}</td>
+          <td>{{ att.uploader.name if att.uploader else '-' }}</td>
+          <td>{{ att.created_at.strftime('%Y-%m-%d %H:%M') if att.created_at else '' }}</td>
+          <td><a class="btn2" href="/file/attachment/{{ att.id }}" download>다운로드</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if can_act %}
+  <div style="margin-top:12px; display:flex; gap:10px;">
+    <form method="post" action="/doc/{{ doc.id }}/approve">
+      <button class="btn" type="submit">승인</button>
+    </form>
+    <form method="post" action="/doc/{{ doc.id }}/reject">
+      <button class="btn2" type="submit">반려</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin:0 0 8px 0;">결재 라인</h3>
+  <table>
+    <thead><tr><th>순서</th><th>결재자</th><th>상태</th><th>처리일</th></tr></thead>
+    <tbody>
+    {% for a in approvers %}
+      <tr>
+        <td>{{ a.seq }}차</td>
+        <td>{{ a.user.name if a.user else '-' }}</td>
+        <td>{{ a.action }}</td>
+        <td>{{ a.acted_at or "" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

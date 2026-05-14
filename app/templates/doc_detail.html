@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="row between">
+    <div>
+      <h2 style="margin:0 0 6px 0;">{{ doc.title }}</h2>
+      <div class="muted small">
+        <span class="pill">{{ doctype_ko }}</span>
+        <span style="margin:0 6px;">·</span>
+        상태: <b>{{ status_ko }}</b>
+        <span style="margin:0 6px;">·</span>
+        결재: <b>{{ mode_ko }}</b>
+        <span style="margin:0 6px;">·</span>
+        작성자: <b>{{ doc.creator.username }}</b>
+      </div>
+
+      {% if doc.doc_type == "QUALITY" %}
+        <div class="muted small" style="margin-top:8px;">
+          문서번호: <b>{{ doc.doc_no or "-" }}</b> · Rev <b>{{ doc.rev or 1 }}</b>
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="row">
+      <a class="btn ghost" href="/dashboard">목록</a>
+      <!-- 결재 관련 버튼 -->
+      {% if is_approver and my_turn %}
+        <form method="post" action="/doc/{{ doc.id }}/approve">
+          <label>의견(선택)</label>
+          <input name="comment" placeholder="예: 확인했습니다">
+          <div class="row" style="justify-content:flex-end; margin-top:10px;">
+            <button class="btn primary" type="submit">승인</button>
+          </div>
+        </form>
+
+        <div class="hr"></div>
+
+        <form method="post" action="/doc/{{ doc.id }}/reject" onsubmit="return confirm('반려할까요?');">
+          <label>반려 사유(필수)</label>
+          <input name="comment" required placeholder="반려 사유를 입력">
+          <div class="row" style="justify-content:flex-end; margin-top:10px;">
+            <button class="btn danger" type="submit">반려</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="hr"></div>
+
+  {% if doc.doc_type == "LEAVE" %}
+    <div class="card" style="margin-bottom:12px; background:#f8fafc; border:1px solid #e2e8f0;">
+      <h4 style="margin:0 0 8px 0;">휴가 신청 상세</h4>
+      <div class="row" style="gap:16px;">
+        <div><b>종류:</b> {{ doc.leave_kind }}</div>
+        <div><b>기간:</b> {{ doc.leave_start }} ~ {{ doc.leave_end }}</div>
+        {% if doc.leave_hours %}<div><b>시간:</b> {{ doc.leave_hours }}</div>{% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if doc.doc_type == "OVERTIME" %}
+    <div class="card" style="margin-bottom:12px; background:#f8fafc; border:1px solid #e2e8f0;">
+      <h4 style="margin:0 0 8px 0;">연장근무 신청 상세</h4>
+      <div class="row" style="gap:16px;">
+        <div><b>근무 일자:</b> {{ doc.overtime_date }}</div>
+        <div><b>근무 시간:</b> {{ doc.overtime_start }} ~ {{ doc.overtime_end }}</div>
+        <div><b>근무 사유:</b> {{ doc.overtime_reason }}</div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if doc.doc_type == "CERTIFICATE" %}
+    <div class="card" style="margin-bottom:12px; background:#f8fafc; border:1px solid #e2e8f0;">
+      <h4 style="margin:0 0 8px 0;">증명서 발급 상세</h4>
+      <div class="row" style="gap:16px;">
+        <div><b>종류:</b> {{ doc.cert_type }}</div>
+        <div><b>제출처/용도:</b> {{ doc.cert_usage }}</div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if doc.doc_type == "EXPENSE" %}
+    <div class="card" style="margin-bottom:12px; background:#f8fafc; border:1px solid #e2e8f0;">
+      <h4 style="margin:0 0 8px 0;">지출 내역 상세</h4>
+      <table class="table" style="margin-bottom:10px;">
+        <thead>
+          <tr>
+            <th width="100">지출일자</th>
+            <th width="120">분류</th>
+            <th>내역 (적요)</th>
+            <th width="120">금액(원)</th>
+            <th width="100">비고</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in doc.expense_items %}
+          <tr>
+            <td>{{ item.expense_date }}</td>
+            <td>{{ item.category }}</td>
+            <td>{{ item.description }}</td>
+            <td style="text-align:right;">{{ "{:,}".format(item.amount) }}</td>
+            <td>{{ item.note }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right; font-weight:bold;">총 지출 금액:</td>
+            <td style="text-align:right; font-weight:bold; color:#2563eb;">{{ "{:,}".format(doc.expense_total) }}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  {% endif %}
+
+  <div style="min-height:200px; padding:10px; border:1px solid #ccc; border-radius:8px; background:#fdfdfd;">
+    {{ doc.body | safe }}
+  </div>
+
+  <!-- Attachment Section -->
+  <div class="card" style="margin-top:20px;">
+    <h4 style="margin:0 0 10px 0;">첨부파일</h4>
+    
+    <!-- File List -->
+    <div id="attachment-list" style="margin-bottom: 15px;">
+      {% if doc.attachments %}
+        <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px;">
+        {% for att in doc.attachments %}
+          <li style="display: flex; align-items: center; justify-content: space-between; background: #f8fafc; padding: 8px 12px; border-radius: 6px;">
+            <a href="/download/attachment/{{ att.id }}" style="text-decoration: none; color: var(--primary); font-weight: 500;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px; vertical-align: middle;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+              {{ att.filename }} ({{ "%.2f"|format(att.filesize / 1024) }} KB)
+            </a>
+            {% if (me.id == doc.creator_id or me.is_admin) and doc.status == 'DRAFT' %}
+            <form method="POST" action="/delete/attachment/{{ att.id }}" onsubmit="return confirm('파일을 삭제하시겠습니까?');" style="margin:0;">
+                <button type="submit" class="btn danger btn-sm" style="padding: 2px 6px; font-size: 12px;">X</button>
+            </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+        </ul>
+      {% else %}
+        <div class="muted" style="text-align: center; padding: 10px 0;">첨부된 파일이 없습니다.</div>
+      {% endif %}
+    </div>
+
+    <!-- File Upload Form (DRAFT 상태이고 작성자 또는 관리자일 때만 보임) -->
+    {% if (me.id == doc.creator_id or me.is_admin) and doc.status == 'DRAFT' %}
+    <form action="/doc/{{ doc.id }}/upload" method="post" enctype="multipart/form-data">
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <input type="file" name="file" class="form-control" style="flex-grow: 1; padding: 8px;" required>
+        <button type="submit" class="btn primary">파일 업로드</button>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+
+  <hr style="margin:20px 0;">
+
+  {% if doc.status == "DRAFT" and user.id == doc.creator_id %}
+    <div class="muted small" style="margin-bottom:10px;">결재자를 지정하고 “상신”을 누르면 결재가 시작됩니다.</div>
+    <form method="post" action="/doc/{{ doc.id }}/submit" id="submitForm">
+      <div id="approverList" class="grid1"></div>
+
+      <div class="row" style="justify-content:space-between; margin-top:10px;">
+        <button class="btn" type="button" onclick="addApprover()">+ 결재자 추가</button>
+        <button class="btn primary" type="submit">상신</button>
+      </div>
+      <input type="hidden" name="approver_ids" id="approver_ids">
+    </form>
+
+		<script>
+		  const users = {{ users_json|safe }};
+		  let n = 0;
+
+		  // ✅ 각 줄의 선택값을 보존하는 상태 (render가 다시 돌아도 값 유지)
+		  // values[0] = 1번 결재자 id, values[1] = 2번 ...
+		  const values = [];
+
+		  function userOptions(selectedId){
+			return users.map(u => {
+			  const sel = String(u.id) === String(selectedId) ? "selected" : "";
+			  return `<option value="${u.id}" ${sel}>${u.username}</option>`;
+			}).join("");
+		  }
+
+		  function rowTemplate(idx){
+			const selectedId = values[idx - 1] || "";
+			const opts = `<option value="">(선택)</option>` + userOptions(selectedId);
+
+			return `
+			  <div class="row" style="gap:8px; align-items:center;">
+				<span class="pill small" style="min-width:46px; justify-content:center;">${idx}</span>
+				<select name="approver${idx}" style="flex:1;" onchange="onPick(${idx}, this.value)">
+				  ${opts}
+				</select>
+				<button class="btn ghost" type="button" onclick="moveUp(${idx})">↑</button>
+				<button class="btn ghost" type="button" onclick="moveDown(${idx})">↓</button>
+				<button class="btn danger" type="button" onclick="removeRow(${idx})">삭제</button>
+			  </div>
+			`;
+		  }
+
+		  function render(){
+			const box = document.getElementById("approverList");
+			box.innerHTML = "";
+
+			for(let i=1;i<=n;i++){
+			  const div = document.createElement("div");
+			  div.className = "card";
+			  div.style.padding = "10px";
+			  div.dataset.idx = String(i);
+			  div.innerHTML = rowTemplate(i);
+			  box.appendChild(div);
+			}
+
+			rebuildHidden();
+		  }
+
+		  function rebuildHidden(){
+			const ids = [];
+			for(let i=0;i<values.length;i++){
+			  const v = (values[i] || "").trim();
+			  if(v && !ids.includes(v)) ids.push(v);
+			}
+			document.getElementById("approver_ids").value = ids.join(",");
+		  }
+
+		  // ✅ select 변경시 상태 저장 + hidden 업데이트
+		  function onPick(idx, val){
+			values[idx - 1] = (val || "").trim();
+			// 중복 선택 방지(선택은 허용하되, hidden은 중복 제거)
+			rebuildHidden();
+		  }
+
+		  function addApprover(){
+			n += 1;
+			values.push("");          // ✅ 새 줄 상태 추가
+			render();                 // ✅ 렌더링해도 기존 값 유지됨
+		  }
+
+		  function removeRow(idx){
+			if(n <= 1) return;
+
+			values.splice(idx - 1, 1); // ✅ 상태에서 삭제
+			n -= 1;
+			render();
+		  }
+
+		  function moveUp(idx){
+			if(idx <= 1) return;
+			swap(idx, idx - 1);
+		  }
+
+		  function moveDown(idx){
+			if(idx >= n) return;
+			swap(idx, idx + 1);
+		  }
+
+		  function swap(a, b){
+			// ✅ 상태 배열에서만 swap하고 render로 UI 반영
+			const ia = a - 1;
+			const ib = b - 1;
+			const tmp = values[ia];
+			values[ia] = values[ib];
+			values[ib] = tmp;
+			render();
+		  }
+
+		  document.getElementById("submitForm").addEventListener("submit", (e)=>{
+			rebuildHidden();
+			const csv = document.getElementById("approver_ids").value.trim();
+			if(!csv){
+			  alert("결재자를 1명 이상 선택하세요.");
+			  e.preventDefault();
+			  return;
+			}
+		  });
+
+		  // 기본 1줄
+		  addApprover();
+		</script>
+
+
+      {% elif doc.status == "IN_REVIEW" %}
+        {% if pending and pending.approver_id == user.id %}
+          <div class="muted small" style="margin-bottom:10px;">현재 당신의 결재 차례입니다.</div>
+          <form method="post" action="/doc/{{ doc.id }}/approve">
+            <label>의견(선택)</label>
+            <input name="comment" placeholder="예: 확인했습니다">
+            <div class="row" style="justify-content:flex-end; margin-top:10px;">
+              <button class="btn primary" type="submit">승인</button>
+            </div>
+          </form>
+
+          <div class="hr"></div>
+
+          <form method="post" action="/doc/{{ doc.id }}/reject" onsubmit="return confirm('반려할까요?');">
+            <label>반려 사유(필수)</label>
+            <input name="comment" required placeholder="반려 사유를 입력">
+            <div class="row" style="justify-content:flex-end; margin-top:10px;">
+              <button class="btn danger" type="submit">반려</button>
+            </div>
+          </form>
+        {% else %}
+          <div class="muted">현재 대기 중입니다.</div>
+          {% if pending %}
+            <div class="muted small" style="margin-top:8px;">현재 결재자: <b>{{ pending.approver.name }} ({{ pending.approver.username }})</b></div>
+          {% endif %}
+        {% endif %}
+      {% elif doc.status == "APPROVED" %}
+        <div class="muted">결재가 완료되었습니다.</div>
+      {% elif doc.status == "REJECTED" %}
+        <div class="muted">반려된 문서입니다.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+<div class="card" style="display:flex; gap:12px;">
+    <!-- LEFT (Main Content) -->
+    <div style="flex-grow:1;">
+      <div class="row items-center">
+        <div style="flex-grow:1;">
+          <a class="btn" href="/dashboard">목록</a>
+        </div>
+        <!-- 결재 관련 버튼 -->
+        {% if is_approver and my_turn %}
+        <form method="post" action="/doc/{{ doc.id }}/approve">
+          <label>의견(선택)</label>
+          <input name="comment" placeholder="예: 확인했습니다">
+          <div class="row" style="justify-content:flex-end; margin-top:10px;">
+            <button class="btn primary" type="submit">승인</button>
+          </div>
+        </form>
+
+        <div class="hr"></div>
+
+        <form method="post" action="/doc/{{ doc.id }}/reject" onsubmit="return confirm('반려할까요?');">
+          <label>반려 사유(필수)</label>
+          <input name="comment" required placeholder="반려 사유를 입력">
+          <div class="row" style="justify-content:flex-end; margin-top:10px;">
+            <button class="btn danger" type="submit">반려</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+
+    <!-- RIGHT (Approver Line) -->
+    <div style="width:280px; flex-shrink:0;">
+        <div class="card" style="border: 1px solid var(--border);">
+            <h4 style="margin:0 0 15px 0; padding-bottom: 10px; border-bottom: 1px solid var(--border); text-align: center;">결재 정보</h4>
+            <ol style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 20px;">
+                {% for ap in doc.approvers %}
+                <li style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                    <div style="font-weight: 500; font-size: 1rem;">{{ ap.approver.name }} {{ ap.approver.grade }}</div>
+                    <div style="width: 80px; height: 80px; border: 2px solid #ccc; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; font-weight: bold; color: #aaa;">
+                        {% if ap.action == 'APPROVED' %}
+                            <span style="color: var(--primary);">승인</span>
+                        {% elif ap.action == 'REJECTED' %}
+                            <span style="color: var(--danger);">반려</span>
+                        {% else %}
+                            <span>-</span>
+                        {% endif %}
+                    </div>
+                    <div style="font-size: 0.8rem; color: #888;">
+                        {{ ap.acted_at.strftime('%Y-%m-%d %H:%M') if ap.acted_at else '--' }}
+                    </div>
+                </li>
+                {% if not loop.last %}
+                <li style="text-align: center; color: #ccc;">▼</li>
+                {% endif %}
+                {% endfor %}
+            </ol>
+        </div>
+    </div>
+</div>
+{% endblock %}

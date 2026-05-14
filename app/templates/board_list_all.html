@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row items-center mb-6">
+  <h2>사내 게시판</h2>
+</div>
+
+<div class="grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
+  {% for board in boards %}
+  <div class="card" style="display: flex; flex-direction: column;">
+    <div style="margin-bottom: 1rem;">
+      <h3 style="margin-top: 0; margin-bottom: 0.5rem;">
+        <a href="/board/{{ board.id }}" style="text-decoration: none; color: var(--primary);">{{ board.name }}</a>
+      </h3>
+      <div style="font-size: 0.875rem; color: var(--muted);">{{ board.description }}</div>
+    </div>
+    <div style="flex-grow: 1;">
+      {% if recent_posts[board.id] %}
+        <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.875rem;">
+          {% for post in recent_posts[board.id] %}
+          <li style="margin-bottom: 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            <a href="/board/{{ board.id }}/post/{{ post.id }}" style="text-decoration: none; color: var(--text);">
+              &bull; {{ post.title }}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div style="font-size: 0.875rem; color: var(--muted); text-align: center; padding: 1rem 0;">등록된 게시글이 없습니다.</div>
+      {% endif %}
+    </div>
+    <div style="margin-top: 1rem; text-align: right;">
+      <a href="/board/{{ board.id }}" class="btn ghost btn-sm">전체보기 &rarr;</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

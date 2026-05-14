@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <title>새 상신</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f7;margin:0}
+    header{background:#111;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px}
+    header a{color:#fff;text-decoration:none;margin-left:auto}
+    .wrap{max-width:780px;margin:18px auto;padding:0 14px}
+    .card{background:#fff;border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.06)}
+    label{display:block;margin:10px 0 6px;color:#444}
+    input,select{width:100%;padding:10px;border:1px solid #ddd;border-radius:10px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    button{margin-top:14px;padding:10px 14px;border:0;border-radius:10px;background:#111;color:#fff;font-weight:800}
+    small{color:#777}
+  </style>
+</head>
+<body>
+<header>
+  <div><a style="color:#fff;text-decoration:none" href="/dashboard">← 대시보드</a> <a href="/quality">품질문서</a></div>
+  <a href="/logout">로그아웃</a>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>새 문서 상신</h2>
+    <form method="post" action="/submit" enctype="multipart/form-data">
+      <label>제목</label>
+      <input name="title" required placeholder="예: 주간 보고서 / 거래명세서 / 스캔문서">
+
+      <div class="row">
+        <div>
+          <label>결재 모드</label>
+          <select name="mode">
+            <option value="SEQUENTIAL" selected>순차(기본)</option>
+            <option value="PARALLEL">병렬(전원 승인)</option>
+          </select>
+          <small>순차: 선택한 순서대로 진행 / 병렬: 선택한 전원이 동시에 결재</small>
+        </div>
+        <div>
+          <label>파일(PDF 또는 이미지)</label>
+          <input type="file" name="file" required>
+          <small>이미지(JPG/PNG)도 가능(자동으로 PDF 변환)</small>
+        </div>
+      </div>
+
+      <label>결재권자 선택(복수 가능)</label>
+      <label>결재자 순서 지정</label>
+<div style="display:grid;grid-template-columns:1fr;gap:10px">
+  <div id="approver-box" style="display:grid;grid-template-columns:1fr;gap:10px">
+  <div>
+    <label style="margin:0 0 6px"> 1차 결재자 </label>
+    <select name="approver1" required>
+      <option value="">(선택)</option>
+      {% for u in users %}
+        <option value="{{u.id}}">{{u.name}} ({{u.login_id}}){% if u.is_admin %} · 관리자{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  {% for n in [2,3,4,5] %}
+  <div class="ap-row" data-n="{{n}}" style="display:none">
+    <label style="margin:0 0 6px"> {{n}}차 결재자 </label>
+    <select name="approver{{n}}" disabled>
+      <option value="">(선택 안함)</option>
+      {% for u in users %}
+        <option value="{{u.id}}">{{u.name}} ({{u.login_id}}){% if u.is_admin %} · 관리자{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endfor %}
+</div>
+
+<div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+  <button type="button" id="btn-add-approver" style="background:#e9eefc;color:#1b3a8a">+ 결재자 추가</button>
+  <button type="button" id="btn-remove-approver" style="background:#f4f4f4;color:#333">- 마지막 결재자 제거</button>
+  <small style="color:#666">기본 1명, 필요 시 최대 5명까지 추가</small>
+</div>
+
+<script>
+(function(){
+  const rows = Array.from(document.querySelectorAll("#approver-box .ap-row"));
+  const addBtn = document.getElementById("btn-add-approver");
+  const rmBtn  = document.getElementById("btn-remove-approver");
+
+  function visibleRows(){
+    return rows.filter(r => r.style.display !== "none");
+  }
+  function showNext(){
+    const next = rows.find(r => r.style.display === "none");
+    if(!next){ alert("결재자는 최대 5명까지 가능합니다."); return; }
+    next.style.display = "";
+    const sel = next.querySelector("select");
+    if(sel){ sel.disabled = false; }
+  }
+  function hideLast(){
+    const vis = visibleRows();
+    if(vis.length === 0){ return; }
+    const last = vis[vis.length - 1];
+    const sel = last.querySelector("select");
+    if(sel){
+      sel.value = "";
+      sel.disabled = true;
+    }
+    last.style.display = "none";
+  }
+
+  addBtn && addBtn.addEventListener("click", showNext);
+  rmBtn  && rmBtn.addEventListener("click", hideLast);
+})();
+</script>
+</div>
+<small>※ 순차 모드: 위에서 아래(1차→2차→…) 순서대로 진행됩니다. 병렬 모드: 선택된 결재자가 동시에 결재합니다.</small>
+
+      <small>※ 순차 모드에서는 선택한 순서(위→아래)가 결재 순서입니다. 병렬 모드는 전원이 동시에 결재합니다.</small>
+
+      <button type="submit">상신</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

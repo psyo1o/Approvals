@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row items-center mb-6" style="display: flex; justify-content: space-between; align-items: center;">
+  <h2 style="margin: 0;">사내 쪽지함</h2>
+  <button onclick="document.getElementById('newMessageForm').style.display='block'" class="btn primary">+ 쪽지 보내기</button>
+</div>
+
+<!-- 쪽지 쓰기 폼 -->
+<div id="newMessageForm" class="card mb-6" style="display: none; border-left: 4px solid var(--primary);">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h3 style="margin: 0;">새 쪽지 작성</h3>
+    <button onclick="document.getElementById('newMessageForm').style.display='none'" class="btn ghost btn-sm">닫기</button>
+  </div>
+  <form method="POST" action="/messages/new">
+    <div class="form-group mb-4">
+      <label class="form-label" style="display: block; margin-bottom: 0.5rem; font-weight: 500;">받는 사람</label>
+      <select name="receiver_id" class="form-control" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px;" required>
+        <option value="">선택하세요</option>
+        {% for u in users %}
+        <option value="{{ u.id }}">{{ u.name }} ({{ u.dept }} {{ u.grade }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group mb-4">
+      <label class="form-label" style="display: block; margin-bottom: 0.5rem; font-weight: 500;">내용</label>
+      <textarea name="content" class="form-control" rows="5" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px; resize: vertical;" required placeholder="내용을 입력하세요"></textarea>
+    </div>
+    <div style="text-align: right;">
+      <button type="submit" class="btn primary">보내기</button>
+    </div>
+  </form>
+</div>
+
+<div class="grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+  <!-- 받은 쪽지함 -->
+  <div class="card p-0">
+    <div style="padding: 1.5rem; border-bottom: 1px solid var(--border); background: #f8fafc;">
+      <h3 style="margin: 0;">받은 쪽지함</h3>
+    </div>
+    <table class="table" style="width: 100%; text-align: left; border-collapse: collapse;">
+      <tbody>
+        {% for msg in inbox %}
+        <tr style="border-bottom: 1px solid var(--border); cursor: pointer;" onclick="window.location='/messages/{{ msg.id }}'">
+          <td style="padding: 1rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+              <span style="font-weight: 600; {{ '' if msg.read_at else 'color: var(--primary);' }}">
+                보낸이: {{ msg.sender.name if msg.sender else '알수없음' }}
+                {% if not msg.read_at %}<span style="font-size: 0.75rem; background: var(--primary); color: white; padding: 2px 6px; border-radius: 4px; margin-left: 0.5rem;">안읽음</span>{% endif %}
+              </span>
+              <span style="font-size: 0.875rem; color: var(--muted);">{{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+            </div>
+            <div style="color: var(--text); font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+              {{ msg.content }}
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td style="padding: 3rem 1rem; text-align: center; color: var(--muted);">받은 쪽지가 없습니다.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 보낸 쪽지함 -->
+  <div class="card p-0">
+    <div style="padding: 1.5rem; border-bottom: 1px solid var(--border); background: #f8fafc;">
+      <h3 style="margin: 0;">보낸 쪽지함</h3>
+    </div>
+    <table class="table" style="width: 100%; text-align: left; border-collapse: collapse;">
+      <tbody>
+        {% for msg in outbox %}
+        <tr style="border-bottom: 1px solid var(--border); cursor: pointer;" onclick="window.location='/messages/{{ msg.id }}'">
+          <td style="padding: 1rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+              <span style="font-weight: 600;">받는이: {{ msg.receiver.name if msg.receiver else '알수없음' }}</span>
+              <span style="font-size: 0.875rem; color: var(--muted);">{{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div style="color: var(--text); font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80%;">
+                {{ msg.content }}
+              </div>
+              <span style="font-size: 0.75rem; {{ 'color: #10b981;' if msg.read_at else 'color: var(--muted);' }}">
+                {{ '읽음' if msg.read_at else '안읽음' }}
+              </span>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td style="padding: 3rem 1rem; text-align: center; color: var(--muted);">보낸 쪽지가 없습니다.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

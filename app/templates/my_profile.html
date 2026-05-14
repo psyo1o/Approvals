@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <title>내 정보</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f7;margin:0}
+    header{background:#111;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px}
+    header a{color:#fff;text-decoration:none;margin-left:auto}
+    .wrap{max-width:760px;margin:18px auto;padding:0 14px}
+    .card{background:#fff;border-radius:12px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,.08)}
+    label{display:block;margin:10px 0 6px;color:#444}
+    input{width:100%;padding:10px;border:1px solid #ddd;border-radius:10px}
+    button{margin-top:14px;padding:10px 14px;border:0;border-radius:10px;background:#111;color:#fff;font-weight:800}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .msg{color:#c00;margin-top:10px}
+    .hint{color:#666;font-size:13px;margin-top:10px;line-height:1.5}
+  </style>
+</head>
+<body>
+<header>
+  <div><b>{{user.name}}</b> ({{user.login_id}}){% if user.is_admin %} · 관리자{% endif %}</div>
+  <a href="/dashboard">대시보드</a>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>내 정보 수정</h2>
+    <form method="post" action="/me/update">
+      <label>이름</label>
+      <input name="name" value="{{user.name}}" required>
+
+      <hr style="margin:16px 0;border:none;border-top:1px solid #eee">
+
+      <h3 style="margin:0 0 6px 0;">비밀번호 변경(선택)</h3>
+      <div class="hint">비밀번호를 바꾸려면 현재 비밀번호를 입력하세요.</div>
+
+      <label>현재 비밀번호</label>
+      <input name="current_password" type="password" placeholder="현재 비밀번호">
+
+      <div class="row">
+        <div>
+          <label>새 비밀번호</label>
+          <input name="new_password" type="password" placeholder="8자 이상 권장">
+        </div>
+        <div>
+          <label>새 비밀번호 확인</label>
+          <input name="new_password2" type="password">
+        </div>
+      </div>
+
+      <button type="submit">저장</button>
+    </form>
+
+    {% if msg %}<div class="msg">{{msg}}</div>{% endif %}
+
+    <div class="hint">
+      - 초기 비밀번호 <b>ydenv</b>는 사용할 수 없습니다.<br>
+      - 관리자 계정은 <b>/admin</b>에서 전체 사용자 수정/삭제가 가능합니다.
+    </div>
+  </div>
+</div>
+</body>
+</html>
