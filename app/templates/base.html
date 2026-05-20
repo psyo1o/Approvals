@@ -26,10 +26,28 @@
       </a>
 
       {% if user %}
+      <form class="global-search" action="/search" method="get" role="search">
+        <span class="global-search-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <input
+          type="search"
+          name="q"
+          class="global-search-input"
+          placeholder="통합 검색 (문서·게시판·첨부)"
+          value="{% if path == '/search' %}{{ request.query_params.get('q', '') }}{% endif %}"
+          autocomplete="off"
+          aria-label="통합 검색"
+        >
+      </form>
       <button type="button" class="nav-toggle" onclick="document.querySelector('.header-nav').classList.toggle('open')" aria-label="메뉴 열기">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
       <nav class="header-nav" aria-label="주 메뉴">
+        <a class="nav-item{% if path == '/search' %} active{% endif %}" href="/search" title="통합 검색">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span class="label">검색</span>
+        </a>
         <a class="nav-item{% if path == '/dashboard' or path.startswith('/doc') %} active{% endif %}" href="/dashboard" title="문서">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
           <span class="label">문서</span>

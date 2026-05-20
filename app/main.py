@@ -28,13 +28,49 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, func, case, and_, or_
+    Column, Integer, String, Boolean, DateTime, Text, ForeignKey, func, case, and_, or_
 )
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session, joinedload, selectinload
+from sqlalchemy.orm import relationship, Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
 
 from passlib.hash import pbkdf2_sha256
-from itsdangerous import URLSafeSerializer, BadSignature
+from itsdangerous import BadSignature
+
+try:
+    from database import Base, DATA_DIR, SessionLocal, engine, run_schema_migration
+    from security import (
+        IpAllowlistMiddleware,
+        SessionIdleMiddleware,
+        create_session_token,
+        load_session_token,
+        SESSION_ABSOLUTE_SECONDS,
+        signer,
+    )
+except ImportError:
+    from app.database import Base, DATA_DIR, SessionLocal, engine, run_schema_migration
+    from app.security import (
+        IpAllowlistMiddleware,
+        SessionIdleMiddleware,
+        create_session_token,
+        load_session_token,
+        SESSION_ABSOLUTE_SECONDS,
+        signer,
+    )
+
+try:
+    from search import run_search
+except ImportError:
+    from app.search import run_search
+
+try:
+    from delegation import apply_auto_delegation_for_approver, apply_auto_delegation_for_rows
+except ImportError:
+    from app.delegation import apply_auto_delegation_for_approver, apply_auto_delegation_for_rows
+
+try:
+    from pdf_watermark import apply_viewer_watermark
+except ImportError:
+    from app.pdf_watermark import apply_viewer_watermark
 
 import uuid
 from io import BytesIO
@@ -49,151 +85,12 @@ APP_SECRET = os.getenv("APP_SECRET", "change-me-long-random")
 ADMIN_ID = os.getenv("APP_ADMIN_ID", "admin")
 ADMIN_PW = os.getenv("APP_ADMIN_PW", "admin1234!")
 ADMIN_DEFAULT_PW = "changeme123!"
-# 기본 데이터 디렉터리를 워크스페이스의 ./data 폴더로 설정 (로컬 테스트용)
-DEFAULT_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
-DATA_DIR = os.getenv("APP_DATA_DIR", DEFAULT_DATA_DIR)
-DB_PATH = os.path.join(DATA_DIR, "app.db")
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
 
 
-# ------------------------------------------------------------
-# SQLite 스키마 마이그레이션(간단 버전)
-# ------------------------------------------------------------
-from sqlalchemy import text as _sql_text
-from sqlalchemy.exc import OperationalError as SAOperationalError
+def migrate_schema() -> None:
+    """스키마 create_all + ADD COLUMN 보강 (database.run_schema_migration)."""
+    run_schema_migration(Base)
 
-def _sqlite_cols(conn, table: str):
-    rows = conn.execute(_sql_text(f"PRAGMA table_info({table})")).fetchall()
-    return {r[1] for r in rows}
-
-def _ensure_column(conn, table: str, col: str, ddl: str):
-    cols = _sqlite_cols(conn, table)
-    if col in cols:
-        return
-    conn.execute(_sql_text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
-    print(f"[migrate] added column {table}.{col} ({ddl})")
-
-def _ensure_table_exists(conn, table: str) -> bool:
-    """테이블이 이미 존재하는지 확인"""
-    rows = conn.execute(_sql_text(
-        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
-    )).fetchall()
-    return len(rows) > 0
-
-_DEFAULT_REGION_NAMES = ("원주", "제천", "단양")
-
-def _seed_default_regions(conn) -> None:
-    """regions 테이블이 비어 있으면 기본 지역명을 삽입."""
-    if not _ensure_table_exists(conn, "regions"):
-        return
-    count = conn.execute(_sql_text("SELECT COUNT(*) FROM regions")).scalar() or 0
-    if count > 0:
-        return
-    for name in _DEFAULT_REGION_NAMES:
-        conn.execute(_sql_text("INSERT INTO regions (name) VALUES (:name)"), {"name": name})
-    print(f"[migrate] seeded {len(_DEFAULT_REGION_NAMES)} default regions")
-
-def migrate_schema():
-    """기존 DB 파일을 유지하면서, 코드에 추가된 컬럼이 없으면 ADD COLUMN으로 보강."""
-    try:
-        with engine.begin() as conn:
-            Base.metadata.create_all(bind=engine)
-
-            # ── 기존 documents 테이블 ──
-            _ensure_column(conn, "documents", "doc_type", "TEXT DEFAULT 'GENERAL'")
-            _ensure_column(conn, "documents", "doc_no", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "rev", "INTEGER DEFAULT 1")
-            _ensure_column(conn, "documents", "base_doc_id", "INTEGER")
-            _ensure_column(conn, "documents", "status", "TEXT DEFAULT 'DRAFT'")
-            _ensure_column(conn, "documents", "is_deleted", "INTEGER DEFAULT 0")
-            _ensure_column(conn, "documents", "mode", "TEXT DEFAULT 'SEQUENTIAL'")
-            _ensure_column(conn, "documents", "created_at", "TEXT DEFAULT (datetime('now'))")
-            _ensure_column(conn, "documents", "updated_at", "TEXT DEFAULT (datetime('now'))")
-            _ensure_column(conn, "documents", "leave_start", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "leave_end",   "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "leave_kind",  "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "leave_hours", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "expense_total", "INTEGER DEFAULT 0")
-            _ensure_column(conn, "documents", "overtime_date", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "overtime_start", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "overtime_end", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "overtime_reason", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "cert_type", "TEXT DEFAULT ''")
-            _ensure_column(conn, "documents", "cert_usage", "TEXT DEFAULT ''")
-
-            # ── 기존 users 테이블 ──
-            _ensure_column(conn, "users", "must_change_pw", "INTEGER DEFAULT 0")
-            _ensure_column(conn, "users", "is_admin", "INTEGER DEFAULT 0")
-            _ensure_column(conn, "users", "grade_id", "INTEGER")
-            _ensure_column(conn, "users", "delegate_id", "INTEGER")
-
-            # ── 기존 grades 테이블 ──
-            _ensure_column(conn, "grades", "level", "INTEGER DEFAULT 1")
-            _ensure_column(conn, "grades", "is_active", "INTEGER DEFAULT 1")
-
-            # ── 기존 attachments 테이블 (구 스키마 보강) ──
-            if _ensure_table_exists(conn, "attachments"):
-                _ensure_column(conn, "attachments", "uploader_id", "INTEGER")
-                _ensure_column(conn, "attachments", "filesize", "INTEGER DEFAULT 0")
-                _ensure_column(conn, "attachments", "created_at", "TEXT DEFAULT (datetime('now'))")
-                # uploader_id 없던 기존 행 → 문서 작성자로 보정
-                conn.execute(_sql_text(
-                    "UPDATE attachments SET uploader_id = ("
-                    "  SELECT creator_id FROM documents WHERE documents.id = attachments.doc_id"
-                    ") WHERE uploader_id IS NULL"
-                ))
-
-            # ── Phase 1 신규: schedules ──
-            if _ensure_table_exists(conn, "schedules"):
-                _ensure_column(conn, "schedules", "color", "TEXT DEFAULT ''")
-                _ensure_column(conn, "schedules", "memo", "TEXT DEFAULT ''")
-                _ensure_column(conn, "schedules", "document_id", "INTEGER")
-
-            # ── Phase 1 신규: worklogs ──
-            if _ensure_table_exists(conn, "worklogs"):
-                _ensure_column(conn, "worklogs", "work_date", "TEXT DEFAULT ''")
-
-            # ── Phase 1 신규: trip_reports ──
-            if _ensure_table_exists(conn, "trip_reports"):
-                _ensure_column(conn, "trip_reports", "destination", "TEXT DEFAULT ''")
-                _ensure_column(conn, "trip_reports", "purpose", "TEXT DEFAULT ''")
-                _ensure_column(conn, "trip_reports", "registration_file_path", "TEXT")
-
-            # ── Phase 1 신규: quality_docs ──
-            if _ensure_table_exists(conn, "quality_docs"):
-                _ensure_column(conn, "quality_docs", "status", "TEXT DEFAULT 'ACTIVE'")
-                _ensure_column(conn, "quality_docs", "uploader_id", "INTEGER")
-                _ensure_column(conn, "quality_docs", "original_filename", "TEXT DEFAULT ''")
-                _ensure_column(conn, "quality_docs", "archive_path", "TEXT DEFAULT ''")
-
-            # ── Phase 5: 지역(regions) / 수금(collections) / 출장복명서 지역 FK ──
-            if _ensure_table_exists(conn, "trip_reports"):
-                _ensure_column(conn, "trip_reports", "region_id", "INTEGER")
-
-            if _ensure_table_exists(conn, "collections"):
-                _ensure_column(conn, "collections", "company_name", "TEXT DEFAULT ''")
-                _ensure_column(conn, "collections", "region_name", "TEXT DEFAULT ''")
-                _ensure_column(conn, "collections", "amount", "INTEGER DEFAULT 0")
-                _ensure_column(conn, "collections", "collection_date", "TEXT DEFAULT ''")
-                _ensure_column(conn, "collections", "note", "TEXT DEFAULT ''")
-
-            _seed_default_regions(conn)
-
-            # 기존 결재완료 문서 → APPROVED_FINAL (회계 집계·완료함 호환)
-            conn.execute(_sql_text(
-                "UPDATE documents SET status = 'APPROVED_FINAL' WHERE status = 'APPROVED'"
-            ))
-
-            print("[migrate] schema migration completed successfully")
-    except Exception as e:
-        print(f"[migrate] migrate_schema failed: {e}")
-
-signer = URLSafeSerializer(APP_SECRET, salt="approval_mvp_session")
 
 def now():
     return datetime.now(timezone.utc)
@@ -259,12 +156,14 @@ class Approver(Base):
     id = Column(Integer, primary_key=True)
     doc_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     approver_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    original_approver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     order_no = Column(Integer, nullable=False)
     action = Column(String(20), nullable=False, default="WAITING")
     acted_at = Column(DateTime(timezone=True), nullable=True)
     comment = Column(Text, nullable=False, default="")
     doc = relationship("Document", back_populates="approvers")
     approver = relationship("User", foreign_keys=[approver_id])
+    original_approver = relationship("User", foreign_keys=[original_approver_id])
 
 class ExpenseItem(Base):
     __tablename__ = "expense_items"
@@ -896,6 +795,8 @@ def _build_ledger_rows(
 # FastAPI
 # ---------------------------
 app = FastAPI(title="approval_mvp")
+app.add_middleware(SessionIdleMiddleware)
+app.add_middleware(IpAllowlistMiddleware)
 
 # ------------------------------------------------------------
 # 표시용(한글) - 템플릿에서 쓰기 편하게 함수로 제공
@@ -976,7 +877,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if not token:
         raise HTTPException(401, "로그인이 필요합니다.")
     try:
-        data = signer.loads(token, max_age=3600*24*30)
+        data = load_session_token(token)
         uid = int(data.get("uid"))
         user = db.query(User).filter(User.id == uid, User.is_active == True).first()
         if not user:
@@ -1245,6 +1146,40 @@ def _fetch_approved_approvers_for_pdf(db: Session, doc_id: int) -> List[dict]:
             "acted_at": _fmt_acted_at_pdf(ap.acted_at) or "-",
         })
     return out
+
+
+def _viewer_display_name(user: User) -> str:
+    return (user.name or user.username or "알 수 없음").strip()
+
+
+def _watermarked_pdf_response(
+    pdf_bytes: bytes,
+    user: User,
+    filename: str,
+    *,
+    inline: bool = False,
+) -> Response:
+    """스트림에만 워터마크를 적용해 PDF Response 반환."""
+    data = apply_viewer_watermark(pdf_bytes, _viewer_display_name(user))
+    disposition = "inline" if inline else "attachment"
+    cd = f'{disposition}; filename*=UTF-8\'\'{quote(filename)}'
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": cd},
+    )
+
+
+def _watermarked_pdf_file_response(
+    path: str,
+    user: User,
+    filename: str,
+    *,
+    inline: bool = False,
+) -> Response:
+    with open(path, "rb") as f:
+        raw = f.read()
+    return _watermarked_pdf_response(raw, user, filename, inline=inline)
 
 
 def _nanum_font_path() -> str:
@@ -1533,13 +1468,25 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         return templates.TemplateResponse("login.html", {"request": request, "error": "아이디 또는 비밀번호가 틀립니다."}, status_code=400)
     redirect_url = "/change-password" if bool(user.must_change_pw) else "/dashboard"
     resp = RedirectResponse(redirect_url, status_code=303)
-    resp.set_cookie("session", signer.dumps({"uid": user.id}), httponly=True, samesite="lax", max_age=3600*24*30)
+    resp.set_cookie(
+        "session",
+        create_session_token(user.id),
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_ABSOLUTE_SECONDS,
+    )
     return resp
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_get(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    reason = (request.query_params.get("reason") or "").strip()
+    error = ""
+    if reason == "session_expired":
+        error = "2시간 동안 활동이 없어 세션이 만료되었습니다. 다시 로그인해 주세요."
+    elif reason == "invalid_session":
+        error = "세션이 유효하지 않습니다. 다시 로그인해 주세요."
+    return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
 @app.get("/")
@@ -1550,6 +1497,7 @@ def root_redirect():
 @app.on_event("startup")
 def app_startup():
     # Ensure DB schema and default admin user exist
+    print(f"[startup] database dialect={engine.dialect.name}")
     try:
         migrate_schema()
     except Exception as e:
@@ -1828,6 +1776,22 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
     return RedirectResponse(url=f"/doc/{d.id}/submit", status_code=303)
 
 
+def _run_auto_delegation(db: Session, doc: Document, rows: List[Approver], *, actions: Optional[List[str]] = None) -> None:
+    """휴가 중 결재자 → 대결자 자동 지정."""
+    apply_auto_delegation_for_rows(
+        db,
+        rows,
+        doc_id=int(doc.id),
+        doc_title=str(doc.title or ""),
+        doc_link=f"/doc/{doc.id}",
+        user_cls=User,
+        schedule_cls=Schedule,
+        event_log_cls=EventLog,
+        notify=_notify,
+        actions=actions,
+    )
+
+
 @app.get("/doc/{doc_id}/submit", response_class=HTMLResponse)
 def doc_submit_get(request: Request, doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
@@ -1897,20 +1861,31 @@ def doc_submit_post(
     doc.mode = mode
 
     db.query(Approver).filter(Approver.doc_id == doc.id).delete()
+    created: List[Approver] = []
     for i, uid in enumerate(clean_ids, start=1):
         action = "WAITING"
         if mode == "PARALLEL":
             action = "PENDING"
         elif mode == "SEQUENTIAL" and i == 1:
             action = "PENDING"
-        db.add(Approver(doc_id=doc.id, approver_id=uid, order_no=i, action=action))
+        ap = Approver(doc_id=doc.id, approver_id=uid, order_no=i, action=action)
+        db.add(ap)
+        created.append(ap)
 
     doc.status = "IN_REVIEW"
     db.add(EventLog(doc_id=doc.id, user_id=user.id, event="SUBMIT", note=f"상신 mode={mode}"))
+    db.flush()
 
-    for uid in clean_ids:
-        if mode == "PARALLEL" or uid == clean_ids[0]:
-            _notify(db, uid, f"[결재요청] {user.name}님이 「{doc.title}」을(를) 상신했습니다", f"/doc/{doc.id}")
+    _run_auto_delegation(db, doc, created)
+
+    for ap in created:
+        if ap.action == "PENDING":
+            _notify(
+                db,
+                int(ap.approver_id),
+                f"[결재요청] {user.name}님이 「{doc.title}」을(를) 상신했습니다",
+                f"/doc/{doc.id}",
+            )
 
     db.commit()
 
@@ -1929,7 +1904,8 @@ def doc_pdf(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get
     final_path = os.path.join(DATA_DIR, 'final', f"final_{doc.id}.pdf")
     if not os.path.isfile(final_path):
         raise HTTPException(404, "PDF 파일이 존재하지 않습니다. 결재 완료 후 이용 가능합니다.")
-    return FileResponse(final_path, media_type="application/pdf", filename=f"{doc.title or 'document'}_{doc.id}.pdf")
+    fname = f"{doc.title or 'document'}_{doc.id}.pdf"
+    return _watermarked_pdf_file_response(final_path, user, fname, inline=False)
 
 
 @app.get("/file/original/{doc_id}")
@@ -1999,7 +1975,7 @@ def preview_history(doc_id: int, db: Session = Depends(get_db), user: User = Dep
     if not is_doc_final(str(doc.status)):
         raise HTTPException(400, "완료된 문서만 조회할 수 있습니다.")
     data = _history_pdf_bytes(db, doc)
-    return Response(content=data, media_type="application/pdf", headers={"Content-Disposition": "inline; filename=history.pdf"})
+    return _watermarked_pdf_response(data, user, "history.pdf", inline=True)
 
 
 @app.get("/file/history/{doc_id}")
@@ -2010,11 +1986,7 @@ def file_history(doc_id: int, db: Session = Depends(get_db), user: User = Depend
     if not is_doc_final(str(doc.status)):
         raise HTTPException(400, "완료된 문서만 다운로드할 수 있습니다.")
     data = _history_pdf_bytes(db, doc)
-    return Response(
-        content=data,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="history_{doc.id}.pdf"'},
-    )
+    return _watermarked_pdf_response(data, user, f"history_{doc.id}.pdf", inline=False)
 
 
 def _perform_single_approve(db: Session, user: User, doc: Document) -> Tuple[bool, str]:
@@ -2053,7 +2025,23 @@ def _perform_single_approve(db: Session, user: User, doc: Document) -> Tuple[boo
         )
         if nxt:
             nxt.action = "PENDING"
-            _notify(db, nxt.approver_id, f"[결재요청] 「{doc.title}」 결재 차례입니다", f"/doc/{doc.id}")
+            apply_auto_delegation_for_approver(
+                db,
+                nxt,
+                doc_id=int(doc.id),
+                doc_title=str(doc.title or ""),
+                doc_link=f"/doc/{doc.id}",
+                user_cls=User,
+                schedule_cls=Schedule,
+                event_log_cls=EventLog,
+                notify=_notify,
+            )
+            _notify(
+                db,
+                int(nxt.approver_id),
+                f"[결재요청] 「{doc.title}」 결재 차례입니다",
+                f"/doc/{doc.id}",
+            )
     update_doc_status_after_action(db, doc)
     db.refresh(doc)
     if is_doc_final(str(doc.status)):
@@ -2100,7 +2088,14 @@ def doc_view(request: Request, doc_id: int, db: Session = Depends(get_db), user:
     submitter = db.get(User, doc.creator_id)
     approvers = []
     for a in db.query(Approver).filter(Approver.doc_id == doc.id).order_by(Approver.order_no).all():
-        approvers.append({"seq": a.order_no, "user": db.get(User, a.approver_id), "action": a.action, "acted_at": a.acted_at})
+        orig_user = db.get(User, a.original_approver_id) if a.original_approver_id else None
+        approvers.append({
+            "seq": a.order_no,
+            "user": db.get(User, a.approver_id),
+            "original_user": orig_user,
+            "action": a.action,
+            "acted_at": a.acted_at,
+        })
     can_act = can_approve_doc(user, doc, db)
 
     worklog = None
@@ -2211,6 +2206,45 @@ def change_password_post(
     user.must_change_pw = False
     db.commit()
     return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.get("/search", response_class=HTMLResponse)
+def search_page(
+    request: Request,
+    q: str = "",
+    tab: str = "all",
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = run_search(
+        db,
+        user,
+        q,
+        tab,
+        document_cls=Document,
+        approver_cls=Approver,
+        user_cls=User,
+        post_cls=Post,
+        board_cls=Board,
+        attachment_cls=Attachment,
+        status_ko=status_ko,
+        doctype_ko=doctype_ko,
+    )
+    return templates.TemplateResponse(
+        "search_results.html",
+        {
+            "request": request,
+            "user": user,
+            "query": result["query"],
+            "tab": result["tab"],
+            "too_short": result["too_short"],
+            "documents": result["documents"],
+            "posts": result["posts"],
+            "attachments": result["attachments"],
+            "counts": result["counts"],
+            "display_hits": result["display_hits"],
+        },
+    )
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -2695,10 +2729,14 @@ def quality_file_view(request: Request, path: str = "", db: Session = Depends(ge
     from urllib.parse import quote
     encoded_name = quote(fname)
     if _qfs.can_inline_view(ext):
+        if ext == ".pdf":
+            return _watermarked_pdf_file_response(abs_path, user, fname, inline=True)
         cd = f"inline; filename*=UTF-8''{encoded_name}"
         return FileResponse(abs_path, media_type=_guess_media_type(abs_path),
                             headers={"Content-Disposition": cd})
     if _qfs.can_download(ext):
+        if ext == ".pdf":
+            return _watermarked_pdf_file_response(abs_path, user, fname, inline=False)
         cd = f"attachment; filename*=UTF-8''{encoded_name}"
         return FileResponse(abs_path, media_type="application/octet-stream",
                             headers={"Content-Disposition": cd})
@@ -2712,6 +2750,9 @@ def quality_file_download(request: Request, path: str = "", db: Session = Depend
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
     from urllib.parse import quote
     fname = os.path.basename(abs_path)
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext == ".pdf":
+        return _watermarked_pdf_file_response(abs_path, user, fname, inline=False)
     cd = f"attachment; filename*=UTF-8''{quote(fname)}"
     return FileResponse(abs_path, media_type="application/octet-stream",
                         headers={"Content-Disposition": cd})
@@ -2885,18 +2926,16 @@ def quality_revision_pdf(
         raise HTTPException(404, "이력을 찾을 수 없습니다.")
     pdf_path = qd.file_path
     if pdf_path and pdf_path.lower().endswith(".pdf") and os.path.isfile(pdf_path):
-        from urllib.parse import quote
-        cd = f"inline; filename*=UTF-8''{quote(os.path.basename(pdf_path))}"
-        return FileResponse(pdf_path, media_type="application/pdf", headers={"Content-Disposition": cd})
+        return _watermarked_pdf_file_response(
+            pdf_path, user, os.path.basename(pdf_path), inline=True
+        )
     if qd.document_id:
         att = db.query(Attachment).filter(
             Attachment.doc_id == qd.document_id,
             Attachment.filename.ilike("%.pdf"),
         ).first()
         if att and os.path.isfile(att.filepath):
-            from urllib.parse import quote
-            cd = f"inline; filename*=UTF-8''{quote(att.filename)}"
-            return FileResponse(att.filepath, media_type="application/pdf", headers={"Content-Disposition": cd})
+            return _watermarked_pdf_file_response(att.filepath, user, att.filename, inline=True)
     raise HTTPException(404, "PDF 파일이 없습니다.")
 
 

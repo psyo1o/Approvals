@@ -9,6 +9,8 @@
 | 메뉴 | URL | 비고 |
 |------|-----|------|
 | (브랜드) | `/dashboard` | 영동환경이앤텍 · 전자결재 |
+| (헤더 검색) | `/search` | 통합 검색 입력창 (`q`, `tab`) |
+| 검색 | `/search` | Phase 6.2 |
 | 문서 | `/dashboard` | `/doc/*` 활성 표시 |
 | 완료 | `/completed` | `APPROVED` / `APPROVED_FINAL` |
 | 일월계표 | `/accounting/dashboard` | |
@@ -62,6 +64,21 @@
 | `APPROVED` | 승인 완료 |
 | `REJECTED` | 반려 |
 
+### 결재선 확장 (Phase 6.3)
+
+| 컬럼 | 설명 |
+|------|------|
+| `approver_id` | 실제 결재 담당자 (자동 대결 시 대결자 ID) |
+| `original_approver_id` | 자동 대결 전 원 결재자 (NULL이면 위임 없음) |
+
+**자동 대결:** 오늘 `schedules`(LEAVE, ACTIVE)에 해당 사용자가 있고 `users.delegate_id`가 있으면 상신·PENDING 전환 시 `approver_id` 갱신. **delegate_id 없으면 변경 없음.**
+
+### 이벤트 로그 (`event_logs.event`)
+
+| 값 | 설명 |
+|----|------|
+| `AUTO_DELEGATE` | 부재 자동 대결 (Phase 6.3) |
+
 ---
 
 ## 3. 전체 HTTP 라우트
@@ -71,8 +88,10 @@
 | 메서드 | URL | 설명 |
 |--------|-----|------|
 | GET | `/` | → `/dashboard` |
-| GET/POST | `/login` | 로그인 |
+| GET/POST | `/login` | 로그인 (`?reason=session_expired` 등) |
 | GET | `/logout` | 세션 삭제 |
+
+**미들웨어 (Phase 6.1):** `IpAllowlistMiddleware` → `SessionIdleMiddleware` — `/login`, `/static` 제외.
 | GET/POST | `/change-password` | 비밀번호 변경 (`must_change_pw`) |
 
 ### 3.2 결재·문서
@@ -86,14 +105,15 @@
 | POST | `/doc/{id}/approve` | 승인 |
 | POST | `/doc/{id}/reject` | 반려 |
 | POST | `/doc/batch_approve` | 일괄 승인 |
-| GET | `/completed` | 완료 문서 검색 |
-| GET | `/doc/{id}/pdf` | 최종 PDF |
+| GET | `/completed` | 완료 문서 검색 (필터) |
+| GET | `/search` | **통합 검색** `q`, `tab=all\|document\|post\|attachment` |
+| GET | `/doc/{id}/pdf` | 최종 PDF (**워터마크** 적용) |
 | GET | `/file/original/{id}` | 원본 첨부 |
 | GET | `/file/attachment/{id}` | 첨부 다운로드 |
 | GET | `/file/trip_registration/{trip_report_id}` | 사업자등록증 |
 | GET | `/preview/original/{id}` | 원본 미리보기 |
-| GET | `/preview/history/{id}` | 이력 미리보기 |
-| GET | `/file/history/{id}` | 이력 파일 |
+| GET | `/preview/history/{id}` | 이력 미리보기 (**워터마크**) |
+| GET | `/file/history/{id}` | 이력 파일 (**워터마크**) |
 
 ### 3.3 회계
 
@@ -116,12 +136,12 @@
 | GET | `/quality` | 품질 결재 목록 |
 | GET | `/quality/library` | NAS 라이브러리 |
 | GET | `/quality/doc/{id}` | 품질 결재 상세 |
-| GET | `/quality/file/view?path=` | NAS PDF 인라인 |
-| GET | `/quality/file/download?path=` | NAS 파일 다운로드 |
+| GET | `/quality/file/view?path=` | NAS PDF 인라인 (**PDF만 워터마크**) |
+| GET | `/quality/file/download?path=` | NAS 다운로드 (**PDF만 워터마크**) |
 | POST | `/quality/revise` | 재개정 상신 |
 | GET | `/api/quality/history?doc_no=` | 리비전 이력 JSON |
 | GET | `/api/quality/search?q=` | 검색 자동완성 |
-| GET | `/quality/revision/pdf?qd_id=` | 리비전 PDF |
+| GET | `/quality/revision/pdf?qd_id=` | 리비전 PDF (**워터마크**) |
 | GET | `/quality/archive/download?qd_id=` | 아카이브 원본 |
 
 ### 3.5 게시판·쪽지·기타
@@ -181,7 +201,7 @@
 | Grade | grades | 직급 |
 | User | users | 사용자 |
 | Document | documents | 결재 문서 |
-| Approver | approvers | 결재선 |
+| Approver | approvers | 결재선 (`original_approver_id` Phase 6.3) |
 | ExpenseItem | expense_items | 지출 항목 |
 | EventLog | event_logs | 이벤트 로그 |
 | Board | boards | 게시판 |
@@ -223,16 +243,19 @@ collections: id, company_name, region_name, amount, collection_date, note
 
 ## 5. migrate_schema() 요약
 
-서버 기동 시 1회 실행 (`startup` 이벤트).
+서버 기동 시 1회 실행 (`app/database.py` → `run_schema_migration`, `startup`).
 
 1. `create_all` — 없는 테이블 생성  
 2. `documents` — doc_type, rev, leave_*, overtime_*, cert_*, expense_total 등  
 3. `users` — must_change_pw, is_admin, grade_id, delegate_id  
-4. `grades` — level, is_active  
-5. `attachments` — uploader_id, filesize, created_at + uploader_id 백필  
-6. `schedules`, `worklogs`, `trip_reports`, `quality_docs` — Phase 1~4 컬럼  
-7. `trip_reports.region_id`, `collections.*` — Phase 5  
-8. 지역 시드, `APPROVED` → `APPROVED_FINAL` UPDATE  
+4. `approvers` — **original_approver_id** (Phase 6.3)  
+5. `grades` — level, is_active  
+6. `attachments` — uploader_id, filesize, created_at + uploader_id 백필  
+7. `schedules`, `worklogs`, `trip_reports`, `quality_docs` — Phase 1~4 컬럼  
+8. `trip_reports.region_id`, `collections.*` — Phase 5  
+9. 지역 시드, `APPROVED` → `APPROVED_FINAL` UPDATE  
+
+**Dialect:** SQLite `PRAGMA` / PostgreSQL·MariaDB `inspect` — `DATABASE_URL` 미설정 시 `sqlite:///{APP_DATA_DIR}/app.db`.
 
 ---
 
@@ -246,13 +269,30 @@ volumes:
   - /volume1/품질문서/...:/nas_quality:ro
 ```
 
-`.env` 예시:
+`.env` 예시 (전체는 프로젝트 루트 `.env.example`):
 
 ```env
 APP_SECRET=랜덤-긴-문자열
 APP_ADMIN_ID=admin
 APP_ADMIN_PW=강한비밀번호
+APP_DATA_DIR=/data
+# DATABASE_URL=postgresql+psycopg://user:pass@host:5432/approval
+SESSION_IDLE_SECONDS=7200
+SESSION_ABSOLUTE_SECONDS=2592000
+# ALLOWED_IPS=127.0.0.1,192.168.10.*
+# TRUST_PROXY=1
 ```
+
+### Phase 6 모듈 (`app/`)
+
+| 파일 | 역할 |
+|------|------|
+| `database.py` | 엔진·URL·마이그레이션 |
+| `security.py` | 세션 유휴·IP 미들웨어 |
+| `search.py` | 통합 검색 |
+| `delegation.py` | 부재 자동 대결 |
+| `pdf_watermark.py` | PDF 워터마크 합성 |
+| `main.py` | FastAPI 앱·모델·라우트 (기존 단일 파일 구조 유지) |
 
 ---
 
@@ -269,4 +309,4 @@ APP_ADMIN_PW=강한비밀번호
 
 ## 8. Python 패키지 (`requirements.txt`)
 
-FastAPI 0.112, Uvicorn 0.30, SQLAlchemy 2.0, Jinja2, passlib(bcrypt), itsdangerous, python-multipart, reportlab(PDF).
+FastAPI 0.112, Uvicorn 0.30, SQLAlchemy 2.0, Jinja2, passlib, itsdangerous, python-multipart, reportlab, pypdf, xhtml2pdf, **python-dotenv**, **psycopg[binary]**, **pymysql**.

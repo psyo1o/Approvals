@@ -5,6 +5,9 @@ python-multipart==0.0.9
 passlib==1.7.4
 sqlalchemy==2.0.32
 itsdangerous==2.2.0
+python-dotenv==1.0.1
+psycopg[binary]==3.2.3
+pymysql==1.1.1
 pydantic==2.8.2
 reportlab==4.2.5
 pypdf==5.1.0

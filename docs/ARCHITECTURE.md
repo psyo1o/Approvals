@@ -15,9 +15,14 @@ approval_mvp/
 ├── requirements.txt          ← Python 패키지 목록
 │
 ├── app/                      ← 애플리케이션 소스 (컨테이너의 /app에 마운트)
-│   ├── main.py               ← ★ 핵심: FastAPI 앱, 모든 라우트, DB 모델, 비즈니스 로직
-│   ├── quality_fs.py          ← NAS 볼륨 스캔 서비스 (품질문서용)
-│   ├── __init__.py            ← Python 패키지 선언
+│   ├── main.py               ← ★ FastAPI 앱, 라우트, DB 모델, 비즈니스 로직
+│   ├── database.py           ← DB URL·엔진·dialect별 migrate (Phase 6.1)
+│   ├── security.py           ← 세션 유휴·IP 허용 미들웨어 (Phase 6.1)
+│   ├── search.py             ← 통합 검색 (Phase 6.2)
+│   ├── delegation.py         ← 부재 자동 대결 (Phase 6.3)
+│   ├── pdf_watermark.py      ← PDF 워터마크 합성 (Phase 6.4)
+│   ├── quality_fs.py         ← NAS 볼륨 스캔 (품질문서)
+│   │
 │   │
 │   ├── static/
 │   │   └── style.css          ← 공통 CSS
@@ -31,6 +36,7 @@ approval_mvp/
 │       ├── doc_submit.html    ← 결재선 지정 + 상신
 │       ├── doc_detail.html    ← 문서 상세 (결재자 선택 포함)
 │       ├── completed.html     ← 완료 문서 검색
+│       ├── search_results.html ← 통합 검색 결과 (Phase 6.2)
 │       ├── accounting_dashboard.html ← 일월계표 (청구 vs 수금)
 │       ├── accounting_ledger.html    ← 미수금대장 (수금 등록·PDF)
 │       ├── calendar.html      ← 일정관리 (FullCalendar 6)
@@ -61,10 +67,12 @@ approval_mvp/
 │   ├── trash/                 ← 소프트 삭제 파일
 │   └── quality_archive/       ← 품질문서 리비전 아카이빙
 │
+├── .env.example               ← 환경 변수 템플릿 (Phase 6)
+│
 └── docs/                      ← 프로젝트 문서
     ├── ARCHITECTURE.md        ← 이 파일 (구조·로직)
     ├── REFERENCE.md           ← 전체 라우트·상태·DB·운영 (상세 목록)
-    └── DEVELOPMENT_PLAN.md    ← 개발 계획 및 진행 기록
+    └── DEVELOPMENT_PLAN.md    ← 개발 계획 Phase 1~6
 │
 └── scripts/                   ← 점검·진단 스크립트 (check_db, test_pages 등)
 ```
@@ -172,7 +180,8 @@ boards ──── posts (board_id) ←── users (author_id)
 |------|------|------|
 | id | PK | |
 | doc_id | FK → documents | 문서 |
-| approver_id | FK → users | 결재자 |
+| approver_id | FK → users | 현재 결재 담당자 (자동 대결 시 대결자) |
+| original_approver_id | FK → users | 자동 대결 전 원 결재자 (Phase 6.3, NULL=위임 없음) |
 | order_no | Integer | 결재 순서 (순차 모드용) |
 | action | String | PENDING / APPROVED / REJECTED / WAITING |
 | comment | Text | 결재 의견 |
@@ -628,9 +637,53 @@ resolve_file_path(rel_path)
 
 | 설정 | 기본값 | 변경 방법 |
 |------|--------|----------|
-| DB 경로 | `/data/app.db` | 코드 내 `DB_PATH` |
-| 업로드 경로 | `/data/uploads/` | 코드 내 `DATA_DIR` |
-| NAS 마운트 | `/nas_quality` | 환경변수 `QUALITY_NAS_ROOT` |
-| 세션 키 | `change-me-long-random` | 환경변수 `APP_SECRET` |
-| 관리자 ID/PW | `admin` / `admin1234!` | 환경변수 `APP_ADMIN_ID` / `APP_ADMIN_PW` |
-| 포트 | 8080 (외부) → 8000 (내부) | docker-compose.yml `ports` |
+| DB | SQLite `APP_DATA_DIR/app.db` | `DATABASE_URL` (PostgreSQL/MariaDB) — `database.py` |
+| 업로드 경로 | `/data/uploads/` | `APP_DATA_DIR` |
+| NAS 마운트 | `/nas_quality` | `QUALITY_NAS_ROOT` |
+| 세션 키 | (변경 필수) | `APP_SECRET` |
+| 유휴 세션 | 7200초 (2시간) | `SESSION_IDLE_SECONDS` |
+| 세션 최대 수명 | 30일 | `SESSION_ABSOLUTE_SECONDS` |
+| IP 허용 | 제한 없음 | `ALLOWED_IPS` (콤마, `*`, CIDR) |
+| 프록시 IP | `request.client` | `TRUST_PROXY=1` + X-Forwarded-For |
+| 관리자 ID/PW | env | `APP_ADMIN_ID` / `APP_ADMIN_PW` |
+| 포트 | 8080 → 8000 | docker-compose.yml `ports` |
+
+---
+
+## 11. Phase 6 작동 로직 (요약)
+
+### 11.1 요청 파이프라인
+
+```
+HTTP 요청
+  → IpAllowlistMiddleware (ALLOWED_IPS 설정 시)
+  → SessionIdleMiddleware (쿠키 last_activity 갱신 / 만료 시 로그인)
+  → FastAPI 라우트
+```
+
+### 11.2 부재 자동 대결
+
+```
+상신(doc_submit_post) 또는 승인 후 다음 PENDING
+  → is_user_on_leave_today(결재자)?
+       No  → approver_id 유지
+       Yes → delegate_id 있음?
+                No  → approver_id 유지 (원 결재자가 결재)
+                Yes → approver_id = 대결자, original_approver_id 저장, 알림
+```
+
+### 11.3 통합 검색
+
+```
+GET /search?q=키워드
+  → run_search(): documents ∪ posts ∪ attachments (권한·LIMIT 20)
+  → search_results.html (탭·배지)
+```
+
+### 11.4 PDF 워터마크
+
+```
+디스크 PDF 읽기 → apply_viewer_watermark(바이트, 열람자명)
+  → reportlab 워터마크 레이어 + pypdf merge_page
+  → Response (data/final/, NAS 파일은 미변경)
+```

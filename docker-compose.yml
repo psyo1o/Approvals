@@ -9,7 +9,13 @@ services:
       APP_SECRET: ${APP_SECRET}
       APP_ADMIN_ID: ${APP_ADMIN_ID}
       APP_ADMIN_PW: ${APP_ADMIN_PW}
+      APP_DATA_DIR: /data
       QUALITY_NAS_ROOT: "/nas_quality"
+      DATABASE_URL: ${DATABASE_URL:-}
+      ALLOWED_IPS: ${ALLOWED_IPS:-}
+      SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-7200}
+      SESSION_ABSOLUTE_SECONDS: ${SESSION_ABSOLUTE_SECONDS:-2592000}
+      TRUST_PROXY: ${TRUST_PROXY:-}
     volumes:
       - ./app:/app
       - ./data:/data

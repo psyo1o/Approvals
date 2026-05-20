@@ -1,6 +1,6 @@
 # 전체 수정 및 기능 추가 이력
 
-> 초기 버그 수정부터 Phase 1~5 확장까지 전체 변경 사항을 기록합니다.
+> 초기 버그 수정부터 Phase 1~6 확장까지 전체 변경 사항을 기록합니다.
 
 ---
 
@@ -197,6 +197,45 @@
 
 ---
 
+## Phase 6 — 인프라·보안·통합검색·대결·PDF (2026-05-20)
+
+### 6.1 DB 추상화·세션/IP 보안
+
+| 항목 | 내용 |
+|------|------|
+| `app/database.py` | `DATABASE_URL`, `create_db_engine()`, dialect별 `run_schema_migration()` |
+| `app/security.py` | 유휴 세션 만료, `ALLOWED_IPS`, `TRUST_PROXY` |
+| `main.py` | engine/import 분리, 미들웨어 등록, 로그인 쿠키 `last_activity` |
+| `requirements.txt` | `python-dotenv`, `psycopg[binary]`, `pymysql` |
+| `.env.example`, `docker-compose.yml` | 환경 변수 문서화·전달 |
+
+### 6.2 글로벌 통합 검색
+
+| 항목 | 내용 |
+|------|------|
+| `app/search.py` | `run_search()` — documents, posts, attachments |
+| `GET /search` | 탭 필터, 2자 이상, 권한 필터 |
+| `base.html`, `search_results.html`, `style.css` | 헤더 검색창·결과 UI |
+
+### 6.3 부재중 자동 대결
+
+| 항목 | 내용 |
+|------|------|
+| `app/delegation.py` | 휴가 판정·대결자 체인(최대 3단) |
+| 정책 | **대결자 미지정 시 원 결재자 유지** (자동 승인 없음) |
+| 훅 | `doc_submit_post`, `_perform_single_approve` |
+| `approvers.original_approver_id` | 감사·표시용 |
+| 알림·UI | `[대결지정]`, `doc.html` 대결 표시 |
+
+### 6.4 PDF 동적 워터마크
+
+| 항목 | 내용 |
+|------|------|
+| `app/pdf_watermark.py` | reportlab + pypdf, 스트림만 합성 |
+| 라우트 | 완료 PDF, 이력 PDF, 품질 PDF view/download/revision |
+
+---
+
 ## 문서 갱신
 
 | 날짜 | 내용 |
@@ -209,3 +248,4 @@
 | 2026-05-19 | UI 개편·시스템 관리·CSV 안내·`attachments` 마이그레이션 문서 반영 |
 | 2026-05-19 | **`docs/REFERENCE.md` 신규** — README/ARCHITECTURE/DEVELOPMENT_PLAN 전면 상세 보강 |
 | 2026-05-19 | **관리 POST API** — `/admin/users/*`, `/admin/grades/*` 핸들러 추가 |
+| 2026-05-20 | **Phase 6** — README·DEVELOPMENT_PLAN·REFERENCE·ARCHITECTURE·FIXES_SUMMARY 반영 |

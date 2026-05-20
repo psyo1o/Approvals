@@ -1,6 +1,6 @@
 # 결재 시스템 확장 — 개발 계획 및 진행 기록
 
-> 일정관리 / 업무일지·출장복명서 / 품질문서(NAS 연동) / **회계(일월계표·미수금)** 확장을 **Phase 1~5**로 나누어 구현.  
+> 일정관리 / 업무일지·출장복명서 / 품질문서(NAS 연동) / **회계(일월계표·미수금)** / **인프라·보안·통합검색·대결·PDF** 확장을 **Phase 1~6**으로 나누어 구현.  
 > 각 Phase 완료 시 이 문서에 기록 갱신.
 
 ---
@@ -18,6 +18,10 @@
 | **5** | **회계 — 지역·수금·일월계표·미수금대장** | ✅ 완료 | 2026-05-19 |
 | 5+ | 일월계표 분기·연별 조회 (5.3 확장) | ✅ 완료 | 2026-05-19 |
 | UI | 공통·관리 화면 디자인 개편 | ✅ 완료 | 2026-05-19 |
+| **6.1** | **DB 추상화·세션/IP 보안** | ✅ 완료 | 2026-05-20 |
+| **6.2** | **글로벌 통합 검색** | ✅ 완료 | 2026-05-20 |
+| **6.3** | **부재중 자동 대결** | ✅ 완료 | 2026-05-20 |
+| **6.4** | **PDF 동적 워터마크** | ✅ 완료 | 2026-05-20 |
 
 > **Phase 5.5는 계획에 없음.** 5.1~5.4 + 분기·연별 확장으로 Phase 5 범위 종료.
 
@@ -42,6 +46,7 @@
 | 2026-05-19 | `/admin` → `/admin/users` 리다이렉트, 구 `admin.html` 제거 |
 | 2026-05-19 | **`docs/REFERENCE.md` 신규** — 전 라우트·상태·DB·관리 API 현황 상세 목록 |
 | 2026-05-19 | **관리 POST API 구현** — 사용자·CSV·직급 CRUD, PW 초기화, flash 메시지 |
+| 2026-05-20 | **Phase 6 완료** — DB 다중 dialect, 세션/IP, `/search`, 자동 대결, PDF 워터마크 |
 
 ---
 
@@ -295,6 +300,72 @@ docker compose up -d --build
 
 ---
 
+## Phase 6 — 인프라 고도화·통합 검색·자동 대결·PDF 보안 (2026-05-20)
+
+**목표:** SQLite 한계 대비, 사내 그룹웨어 수준의 보안·검색·결재 연속성·문서 유출 방지.
+
+### Phase 6.1 — DB 접속 추상화 및 세션/IP 보안
+
+| 항목 | 내용 |
+|------|------|
+| `app/database.py` | `DATABASE_URL`, `create_db_engine()`, `run_schema_migration()` |
+| SQLite | `check_same_thread=False`, 기본 `sqlite:///{APP_DATA_DIR}/app.db` |
+| PostgreSQL / MariaDB | `pool_pre_ping`, dialect별 `ADD COLUMN` (`inspect` / PRAGMA 분기) |
+| `app/security.py` | `SessionIdleMiddleware`, `IpAllowlistMiddleware` |
+| 세션 쿠키 | `uid` + `last_activity`, 유휴·절대 만료, API 만료 시 401 JSON |
+| 환경 변수 | `SESSION_IDLE_SECONDS`, `SESSION_ABSOLUTE_SECONDS`, `ALLOWED_IPS`, `TRUST_PROXY` |
+| 의존성 | `python-dotenv`, `psycopg[binary]`, `pymysql` |
+| 템플릿 | `login.html` — `?reason=session_expired` 안내 |
+
+### Phase 6.2 — 글로벌 통합 검색
+
+| 항목 | 내용 |
+|------|------|
+| `app/search.py` | `run_search()` — documents / posts / attachments |
+| 라우트 | `GET /search?q=&tab=all\|document\|post\|attachment` |
+| UI | `base.html` 헤더 검색창, `search_results.html`, `style.css` 탭·배지 |
+| 권한 | 문서·첨부는 `can_view_doc`와 동일 SQL (작성자·결재자·대결 위임·관리자) |
+| 검색 | SQLite `LIKE` / PostgreSQL `ilike`, 카테고리별 LIMIT 20 |
+
+### Phase 6.3 — 부재중 자동 대결
+
+| 항목 | 내용 |
+|------|------|
+| `app/delegation.py` | `is_user_on_leave_today`, `resolve_effective_approver_id`, `apply_auto_delegation_*` |
+| 조건 | `schedules`: `LEAVE`, `ACTIVE`, 오늘 ∈ [start_date, end_date] |
+| **대결자 없음** | `delegate_id` 미설정 시 **원 결재자 유지** (건너뛰기·자동승인 없음) |
+| 훅 | `doc_submit_post` (상신), `_perform_single_approve` (다음 PENDING) |
+| DB | `approvers.original_approver_id` |
+| 알림 | `[대결지정] OOO님의 부재로 …` → 대결자 |
+| UI | `doc.html` 결재란 `(원결재자 대결)` |
+| 로그 | `EventLog` event=`AUTO_DELEGATE` |
+
+### Phase 6.4 — PDF 동적 워터마크
+
+| 항목 | 내용 |
+|------|------|
+| `app/pdf_watermark.py` | `apply_viewer_watermark()` — reportlab + pypdf |
+| 문구 | `열람자: {이름} / 인쇄일시: {KST} / 무단배포 금지` (대각선·연한 회색) |
+| 원칙 | 디스크 원본(`data/final/`, NAS) **미수정**, HTTP 응답 바이트만 합성 |
+| 적용 | `/doc/{id}/pdf`, 이력 PDF, `/quality/revision/pdf`, NAS PDF view/download |
+
+### Phase 6 신규·수정 파일
+
+| 파일 | 역할 |
+|------|------|
+| `app/database.py` | 엔진·마이그레이션 |
+| `app/security.py` | 미들웨어 |
+| `app/search.py` | 통합 검색 |
+| `app/delegation.py` | 자동 대결 |
+| `app/pdf_watermark.py` | 워터마크 |
+| `app/main.py` | 라우트·훅·헬퍼 연동 |
+| `app/templates/search_results.html` | 검색 결과 |
+| `.env.example` | 환경 변수 샘플 |
+| `docker-compose.yml` | Phase 6 env 전달 |
+| `requirements.txt` | dotenv, psycopg, pymysql |
+
+---
+
 ## 알려진 제한사항 · 후속 작업
 
 | 항목 | 상태 | 비고 |
@@ -302,6 +373,8 @@ docker compose up -d --build
 | 관리 POST API | ✅ 구현 (2026-05-19) | 사용자·직급·CSV·PW 초기화 |
 | `users.grade` | 문자열 필드 | `grades` 테이블과 이름으로 연동 (FK 아님) |
 | `requirements.txt` | 중복 항목 | 상단 비고정 + 하단 pinned 버전 공존 |
+| 통합 검색 Full-Text | Phase 6.2는 LIKE/ilike | PostgreSQL `tsvector` 등은 후속 가능 |
+| 대결 재검사 | 상신 시점·PENDING 전환 시 | 휴가 종료 후에도 이미 위임된 결재선은 수동 변경 없음 |
 
 상세 라우트 표: [REFERENCE.md](REFERENCE.md)
 
@@ -325,4 +398,4 @@ docker compose up -d --build
 | `README.md` | 설치, 사용법, 환경변수, CSV, 회계, UI 요약 |
 | `docs/ARCHITECTURE.md` | 파일 구조, DB 스키마, 작동 로직·흐름도 |
 | `docs/REFERENCE.md` | **전체 HTTP 라우트·상태·모델·migrate·운영** |
-| `FIXES_SUMMARY.md` | 초기 버그 수정 + Phase 1~5 변경 이력 |
+| `FIXES_SUMMARY.md` | 초기 버그 수정 + Phase 1~6 변경 이력 |

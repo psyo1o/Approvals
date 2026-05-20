@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0;">통합 검색</h2>
+  <p class="muted" style="margin:6px 0 0;">결재문서·게시판·첨부파일을 한 번에 검색합니다.</p>
+
+  <form class="search-page-form" action="/search" method="get" role="search">
+    <input type="search" name="q" value="{{ query }}" placeholder="검색어 (2자 이상)" autocomplete="off" aria-label="검색어">
+    {% if tab != 'all' %}
+    <input type="hidden" name="tab" value="{{ tab }}">
+    {% endif %}
+    <button type="submit" class="btn primary">검색</button>
+  </form>
+
+  {% if too_short and query %}
+  <p class="muted search-empty">검색어를 2자 이상 입력해 주세요.</p>
+  {% elif not query %}
+  <p class="muted search-empty">상단 검색창 또는 위 입력란에 검색어를 입력하세요.</p>
+  {% else %}
+
+  <nav class="search-tabs" aria-label="검색 결과 필터">
+    <a class="search-tab{% if tab == 'all' %} active{% endif %}" href="/search?q={{ query|urlencode }}&tab=all">
+      전체 <span class="search-tab-count">{{ counts.all }}</span>
+    </a>
+    <a class="search-tab{% if tab == 'document' %} active{% endif %}" href="/search?q={{ query|urlencode }}&tab=document">
+      결재문서 <span class="search-tab-count">{{ counts.document }}</span>
+    </a>
+    <a class="search-tab{% if tab == 'post' %} active{% endif %}" href="/search?q={{ query|urlencode }}&tab=post">
+      게시판 <span class="search-tab-count">{{ counts.post }}</span>
+    </a>
+    <a class="search-tab{% if tab == 'attachment' %} active{% endif %}" href="/search?q={{ query|urlencode }}&tab=attachment">
+      첨부파일 <span class="search-tab-count">{{ counts.attachment }}</span>
+    </a>
+  </nav>
+
+  {% if tab == 'all' %}
+    {% if documents %}
+    <h3 class="search-section-title">결재문서</h3>
+    <ul class="search-results">
+      {% for hit in documents %}
+      <li class="search-result-item">
+        <a class="search-result-link" href="{{ hit.url }}">
+          <span class="search-result-top">
+            <span class="badge search-kind-badge badge-blue">결재문서</span>
+            <strong class="search-result-title">{{ hit.title }}</strong>
+          </span>
+          {% if hit.meta %}<span class="search-result-meta muted">{{ hit.meta }}</span>{% endif %}
+          {% if hit.snippet %}<p class="search-result-snippet muted">{{ hit.snippet }}</p>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if posts %}
+    <h3 class="search-section-title">게시판</h3>
+    <ul class="search-results">
+      {% for hit in posts %}
+      <li class="search-result-item">
+        <a class="search-result-link" href="{{ hit.url }}">
+          <span class="search-result-top">
+            <span class="badge search-kind-badge badge-green">게시판</span>
+            <strong class="search-result-title">{{ hit.title }}</strong>
+          </span>
+          {% if hit.meta %}<span class="search-result-meta muted">{{ hit.meta }}</span>{% endif %}
+          {% if hit.snippet %}<p class="search-result-snippet muted">{{ hit.snippet }}</p>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if attachments %}
+    <h3 class="search-section-title">첨부파일</h3>
+    <ul class="search-results">
+      {% for hit in attachments %}
+      <li class="search-result-item">
+        <a class="search-result-link" href="{{ hit.url }}">
+          <span class="search-result-top">
+            <span class="badge search-kind-badge badge-amber">첨부파일</span>
+            <strong class="search-result-title">{{ hit.title }}</strong>
+          </span>
+          {% if hit.meta %}<span class="search-result-meta muted">{{ hit.meta }}</span>{% endif %}
+          {% if hit.snippet %}<p class="search-result-snippet muted">{{ hit.snippet }}</p>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if counts.all == 0 %}
+    <p class="muted search-empty">「{{ query }}」에 대한 결과가 없습니다.</p>
+    {% endif %}
+
+  {% else %}
+    <ul class="search-results">
+      {% for hit in display_hits %}
+      <li class="search-result-item">
+        <a class="search-result-link" href="{{ hit.url }}">
+          <span class="search-result-top">
+            {% if hit.kind == 'document' %}
+            <span class="badge search-kind-badge badge-blue">결재문서</span>
+            {% elif hit.kind == 'post' %}
+            <span class="badge search-kind-badge badge-green">게시판</span>
+            {% else %}
+            <span class="badge search-kind-badge badge-amber">첨부파일</span>
+            {% endif %}
+            <strong class="search-result-title">{{ hit.title }}</strong>
+          </span>
+          {% if hit.meta %}<span class="search-result-meta muted">{{ hit.meta }}</span>{% endif %}
+          {% if hit.snippet %}<p class="search-result-snippet muted">{{ hit.snippet }}</p>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if display_hits|length == 0 %}
+    <p class="muted search-empty">「{{ query }}」에 대한 결과가 없습니다.</p>
+    {% endif %}
+  {% endif %}
+
+  {% endif %}
+</div>
+{% endblock %}
