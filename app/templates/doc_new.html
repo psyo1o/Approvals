@@ -205,9 +205,18 @@
         <input type="date" name="trip_date" required>
       </div>
       <div>
-        <label>출장지</label>
-        <input type="text" name="destination" required placeholder="예: 울산 현대중공업">
+        <label>출장 지역</label>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <select name="region_id" id="trip_region_id" required style="flex:1;min-width:140px;">
+            <option value="">지역 선택</option>
+          </select>
+          <button type="button" class="btn ghost" style="white-space:nowrap;" onclick="openRegionModal()">+ 새 지역 추가</button>
+        </div>
       </div>
+    </div>
+    <div style="margin-bottom:10px;">
+      <label>출장지 (상세)</label>
+      <input type="text" name="destination" required placeholder="예: 울산 현대중공업">
     </div>
     <div style="margin-bottom:10px;">
       <label>출장 목적</label>
@@ -250,7 +259,30 @@
 
 <!-- ========================================================== -->
 
+<style>
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.show { display:flex; }
+  .modal-box { background:var(--card,#fff); border-radius:12px; padding:24px; width:90%; max-width:400px; box-shadow:0 8px 30px rgba(0,0,0,.15); }
+  .modal-box h3 { margin:0 0 14px 0; }
+  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .field-error { color:var(--danger,#dc2626); font-size:13px; margin-top:6px; min-height:1.2em; }
+</style>
+
+<div class="modal-overlay" id="regionModal" onclick="if(event.target===this) closeRegionModal()">
+  <div class="modal-box" role="dialog" aria-labelledby="regionModalTitle">
+    <h3 id="regionModalTitle">새 지역 추가</h3>
+    <label for="new_region_name">지역명</label>
+    <input type="text" id="new_region_name" maxlength="50" placeholder="예: 원주" onkeydown="if(event.key==='Enter'){event.preventDefault();saveNewRegion();}">
+    <div id="region_modal_error" class="field-error"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" onclick="closeRegionModal()">취소</button>
+      <button type="button" class="btn primary" onclick="saveNewRegion()">저장</button>
+    </div>
+  </div>
+</div>
+
 <script>
+  let regionCache = {{ regions_json | safe }};
   // 지출결의서 행 추가/계산 스크립트
   function formatComma(num) { return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
   function unformatComma(str) {
@@ -372,7 +404,89 @@
 
     if (docType === "EXPENSE") addExpenseRow();
     if (docType === "WORK_LOG") addWorkLogRow();
-    if (docType === "TRIP_REPORT") addTripRow();
+    if (docType === "TRIP_REPORT") {
+      addTripRow();
+      loadTripRegions();
+    }
+  }
+
+  function populateRegionSelect(selectEl, regions, selectedId) {
+    if (!selectEl) return;
+    const cur = selectedId != null ? String(selectedId) : selectEl.value;
+    selectEl.innerHTML = '<option value="">지역 선택</option>';
+    (regions || []).forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = String(r.id);
+      opt.textContent = r.name;
+      selectEl.appendChild(opt);
+    });
+    if (cur) selectEl.value = cur;
+  }
+
+  async function fetchRegions() {
+    const res = await fetch('/api/regions');
+    if (!res.ok) throw new Error('지역 목록 로드 실패');
+    const data = await res.json();
+    regionCache = data.regions || [];
+    return regionCache;
+  }
+
+  async function loadTripRegions() {
+    const sel = document.getElementById('trip_region_id');
+    if (!sel) return;
+    try {
+      let regions = regionCache;
+      if (!regions || regions.length === 0) {
+        regions = await fetchRegions();
+      }
+      populateRegionSelect(sel, regions);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function openRegionModal() {
+    const modal = document.getElementById('regionModal');
+    if (modal) modal.classList.add('show');
+    const inp = document.getElementById('new_region_name');
+    if (inp) { inp.value = ''; inp.focus(); }
+    const err = document.getElementById('region_modal_error');
+    if (err) err.textContent = '';
+  }
+
+  function closeRegionModal() {
+    const modal = document.getElementById('regionModal');
+    if (modal) modal.classList.remove('show');
+  }
+
+  async function saveNewRegion() {
+    const name = (document.getElementById('new_region_name')?.value || '').trim();
+    const errEl = document.getElementById('region_modal_error');
+    if (!name) {
+      if (errEl) errEl.textContent = '지역명을 입력하세요.';
+      return;
+    }
+    try {
+      const res = await fetch('/api/regions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        if (errEl) errEl.textContent = res.status === 409 ? '이미 등록된 지역입니다.' : '저장에 실패했습니다.';
+        return;
+      }
+      const reg = await res.json();
+      if (!regionCache.some(r => r.id === reg.id)) {
+        regionCache.push(reg);
+      }
+      regionCache.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ko'));
+      const sel = document.getElementById('trip_region_id');
+      populateRegionSelect(sel, regionCache, reg.id);
+      closeRegionModal();
+    } catch (e) {
+      if (errEl) errEl.textContent = '네트워크 오류가 발생했습니다.';
+    }
   }
 
   docTypeSelect.addEventListener("change", (e) => {

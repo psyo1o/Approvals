@@ -40,11 +40,15 @@
                         <h3 style="margin: 0;">{{ u.name }} 님에게 쪽지 보내기</h3>
                         <button onclick="document.getElementById('msgFormModal_{{ u.id }}').style.display='none'" class="btn ghost btn-sm">닫기</button>
                       </div>
-                      <form method="POST" action="/messages/new">
+                      <form method="POST" action="/messages/new" enctype="multipart/form-data">
                         <input type="hidden" name="receiver_id" value="{{ u.id }}">
                         <div class="form-group mb-4">
                           <label class="form-label" style="display: block; margin-bottom: 0.5rem; font-weight: 500;">내용</label>
-                          <textarea name="content" class="form-control" rows="4" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px; resize: vertical;" required placeholder="전달할 메시지를 입력하세요..."></textarea>
+                          <textarea name="content" class="form-control" rows="4" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px; resize: vertical;" placeholder="전달할 메시지를 입력하세요..."></textarea>
+                        </div>
+                        <div class="form-group mb-4">
+                          <label class="form-label" style="display: block; margin-bottom: 0.5rem; font-weight: 500;">첨부파일</label>
+                          <input type="file" name="files" multiple class="form-control" style="width: 100%; padding: 0.5rem;">
                         </div>
                         <div style="text-align: right;">
                           <button type="submit" class="btn primary">전송</button>

@@ -1,51 +1,129 @@
 {% extends "base.html" %}
+{% set title = "직급 관리 · 시스템 관리" %}
 {% block content %}
-<div class="card">
-  <h3>직급 관리</h3>
-  <div class="muted" style="margin-bottom:10px;">
-    <a href="/dashboard">대시보드</a> · <a href="/admin/users">사용자관리</a>
-  </div>
+{% if flash %}<div class="alert">{{ flash }}</div>{% endif %}
+{% set active_grades = grades|selectattr('is_active')|list|length %}
 
-  <div class="card">
-    <h4 style="margin-top:0;">직급 추가</h4>
-    <form method="post" action="/admin/grades/add">
-      <div class="row">
-        <div style="flex:1; min-width:220px;">
-          <label>직급명</label>
-          <input name="name" required placeholder="예: 과장">
-        </div>
-      </div>
-      <div style="margin-top:10px;">
-        <button class="btn" type="submit">추가</button>
-      </div>
-    </form>
-  </div>
+<section class="admin-page">
+  <section class="admin-hero">
+    <section class="admin-hero-text">
+      <h2>시스템 관리</h2>
+      <p class="muted">직급 체계 · 조직 등급 관리</p>
+    </section>
+    {% include "partials/admin_nav.html" %}
+  </section>
 
-  <h4>목록</h4>
-  <table>
-    <thead>
-      <tr><th>ID</th><th>직급명</th><th>활성</th><th>작업</th></tr>
-    </thead>
-    <tbody>
-      {% for g in grades %}
-      <tr>
-        <td>{{g.id}}</td>
-        <td>{{g.name}}</td>
-        <td>{{"Y" if g.is_active else ""}}</td>
-        <td>
-          {% if g.is_active %}
-          <form method="post" action="/admin/grades/{{g.id}}/delete" style="display:inline" onsubmit="return confirm('비활성화할까요? (해당 직급을 가진 사용자 직급은 빈칸 처리됩니다)');">
-            <button class="btn" type="submit">삭제</button>
-          </form>
+  <section class="admin-stats">
+    <section class="admin-stat">
+      <span class="admin-stat-label">전체 직급</span>
+      <span class="admin-stat-value accent">{{ grades|length }}</span>
+    </section>
+    <section class="admin-stat">
+      <span class="admin-stat-label">사용 중</span>
+      <span class="admin-stat-value">{{ active_grades }}</span>
+    </section>
+    <section class="admin-stat">
+      <span class="admin-stat-label">비활성</span>
+      <span class="admin-stat-value">{{ grades|length - active_grades }}</span>
+    </section>
+  </section>
+
+  <section class="admin-grid">
+    <section class="admin-section">
+      <section class="admin-section-head">
+        <span class="admin-section-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </span>
+        <section>
+          <h3>직급 추가</h3>
+          <p>새 직급명을 등록합니다</p>
+        </section>
+      </section>
+      <form method="post" action="/admin/grades/add">
+        <section class="admin-form-grid">
+          <section>
+            <label>직급명</label>
+            <input name="name" required placeholder="예: 과장, 대리, 사원">
+          </section>
+        </section>
+        <section class="admin-form-actions">
+          <button class="btn primary" type="submit">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            직급 추가
+          </button>
+        </section>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <section class="admin-section-head">
+        <span class="admin-section-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        </span>
+        <section>
+          <h3>안내</h3>
+          <p>직급 삭제 시 참고 사항</p>
+        </section>
+      </section>
+      <section class="admin-callout warn">
+        직급을 <strong>비활성화</strong>하면 해당 직급을 쓰던 사용자의 직급 필드는 비워집니다.<br>
+        복구하면 다시 목록에 표시됩니다.
+      </section>
+    </section>
+  </section>
+
+  <section class="admin-section">
+    <section class="admin-section-head">
+      <span class="admin-section-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+      </span>
+      <section>
+        <h3>직급 목록</h3>
+        <p>활성 / 비활성 상태 관리</p>
+      </section>
+    </section>
+    <section class="admin-table-wrap table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:56px;">ID</th>
+            <th>직급명</th>
+            <th style="width:88px;">상태</th>
+            <th style="width:120px;">작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for g in grades %}
+          <tr>
+            <td class="muted">{{ g.id }}</td>
+            <td><strong>{{ g.name }}</strong></td>
+            <td>
+              {% if g.is_active %}
+              <span class="tag tag-yes">사용 중</span>
+              {% else %}
+              <span class="tag tag-off">비활성</span>
+              {% endif %}
+            </td>
+            <td>
+              <section class="admin-actions">
+                {% if g.is_active %}
+                <form method="post" action="/admin/grades/{{ g.id }}/delete" style="display:inline;margin:0;" onsubmit="return confirm('이 직급을 비활성화할까요?');">
+                  <button class="btn btn-sm danger" type="submit">비활성화</button>
+                </form>
+                {% else %}
+                <form method="post" action="/admin/grades/{{ g.id }}/restore" style="display:inline;margin:0;">
+                  <button class="btn btn-sm primary" type="submit">복구</button>
+                </form>
+                {% endif %}
+              </section>
+            </td>
+          </tr>
           {% else %}
-          <form method="post" action="/admin/grades/{{g.id}}/restore" style="display:inline">
-            <button class="btn" type="submit">복구</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+          <tr><td colspan="4" class="muted" style="text-align:center;padding:28px;">등록된 직급이 없습니다.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+</section>
 {% endblock %}

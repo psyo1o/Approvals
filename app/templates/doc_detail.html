@@ -310,7 +310,7 @@
             <div class="muted small" style="margin-top:8px;">현재 결재자: <b>{{ pending.approver.name }} ({{ pending.approver.username }})</b></div>
           {% endif %}
         {% endif %}
-      {% elif doc.status == "APPROVED" %}
+      {% elif doc.status == "APPROVED" or doc.status == "APPROVED_FINAL" %}
         <div class="muted">결재가 완료되었습니다.</div>
       {% elif doc.status == "REJECTED" %}
         <div class="muted">반려된 문서입니다.</div>

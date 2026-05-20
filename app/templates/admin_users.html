@@ -1,91 +1,196 @@
 {% extends "base.html" %}
+{% set title = "사용자 관리 · 시스템 관리" %}
 {% block content %}
-<div class="card">
-  <h3>사용자 관리</h3>
-  <div class="muted" style="margin-bottom:10px;">
-    <a href="/dashboard">대시보드</a> · <a href="/admin/grades">직급관리</a>
-  </div>
+{% set active_n = users|selectattr('is_active')|list|length %}
+{% set admin_n = users|selectattr('is_admin')|list|length %}
 
-  <div class="card">
-    <h4 style="margin-top:0;">사용자 추가</h4>
-    <form method="post" action="/admin/users/add">
-      <div class="row">
-        <div style="flex:1; min-width:180px;">
-          <label>아이디</label>
-          <input name="username" required>
-        </div>
-        <div style="flex:1; min-width:180px;">
-          <label>이름</label>
-          <input name="name">
-        </div>
-        <div style="flex:1; min-width:180px;">
-          <label>부서</label>
-          <input name="dept">
-        </div>
-        <div style="flex:1; min-width:180px;">
-          <label>직급</label>
-          <select name="grade_id"><option value="">(선택)</option>{% for g in grades %}<option value="{{g.id}}">{{g.name}}</option>{% endfor %}</select>
-          <div class="muted">목록에 없으면 직접 입력</div>
-          <input name="grade" placeholder="직접 입력">
-        </div>
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <div style="flex:1; min-width:180px;">
-          <label>임시 비밀번호(초기)</label>
-          <input name="temp_pw" value="changeme123!">
-          <div class="muted">※ 최초 로그인 시 변경 강제</div>
-        </div>
-        <div style="width:160px;">
-          <label>관리자?</label>
-          <select name="is_admin">
-            <option value="0" selected>아니오</option>
-            <option value="1">예</option>
-          </select>
-        </div>
-      </div>
-      <div style="margin-top:12px;">
-        <button class="btn" type="submit">추가</button>
-      </div>
-    </form>
-  </div>
+{% if flash %}<div class="alert">{{ flash }}</div>{% endif %}
+<section class="admin-page">
+  <section class="admin-hero">
+    <section class="admin-hero-text">
+      <h2>시스템 관리</h2>
+      <p class="muted">사용자 계정 · 권한 · 일괄 등록</p>
+    </section>
+    {% include "partials/admin_nav.html" %}
+  </section>
 
-  <div class="card">
-    <h4 style="margin-top:0;">CSV 일괄 등록</h4>
-    <div class="muted">헤더 예: username,name,dept,grade,is_admin</div>
-    <form method="post" action="/admin/users/import_csv" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".csv" required>
-      <button class="btn" type="submit">업로드/등록</button>
-    </form>
-    <div class="muted" style="margin-top:6px;">초기 비밀번호는 모두 changeme123! 로 설정됩니다.</div>
-  </div>
+  <section class="admin-stats">
+    <section class="admin-stat">
+      <span class="admin-stat-label">전체 사용자</span>
+      <span class="admin-stat-value accent">{{ users|length }}</span>
+    </section>
+    <section class="admin-stat">
+      <span class="admin-stat-label">활성 계정</span>
+      <span class="admin-stat-value">{{ active_n }}</span>
+    </section>
+    <section class="admin-stat">
+      <span class="admin-stat-label">관리자</span>
+      <span class="admin-stat-value">{{ admin_n }}</span>
+    </section>
+    <section class="admin-stat">
+      <span class="admin-stat-label">직급 종류</span>
+      <span class="admin-stat-value">{{ grades|length }}</span>
+    </section>
+  </section>
 
-  <h4>사용자 목록</h4>
-    <table>
-    <tr><th>ID</th><th>아이디</th><th>이름</th><th>부서</th><th>직급</th><th>관리자</th><th>활성</th><th>초기변경</th><th>관리</th></tr>
-    {% for u in users %}
-      <tr>
-        <td>{{ u.id }}</td>
-        <td>{{ u.username }}</td>
-        <td>{{ u.name }}</td>
-        <td>{{ u.dept }}</td>
-        <td>{{ u.grade.name if u.grade else '' }}</td>
-        <td>{{ "Y" if u.is_admin else "" }}</td>
-        <td>{{ "Y" if u.is_active else "" }}</td>
-        <td>{{ "Y" if u.must_change_pw else "" }}</td>
-        <td>
-          <a class="btn" href="/admin/users/{{u.id}}/edit" style="text-decoration:none;">수정</a>
-          <form method="post" action="/admin/users/reset_pw" style="display:inline">
-            <input type="hidden" name="user_id" value="{{ u.id }}">
-            <button class="btn" type="submit">비번초기화</button>
-          </form>
-          {% if u.username != "admin" %}
-          <form method="post" action="/admin/users/{{u.id}}/delete" style="display:inline" onsubmit="return confirm('사용자를 비활성화(삭제)할까요?');">
-            <button class="btn" type="submit">삭제</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-  </table>
-</div>
+  <section class="admin-grid">
+    <section class="admin-section">
+      <header class="admin-section-head">
+        <span class="admin-section-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+        </span>
+        <section>
+          <h3>사용자 추가</h3>
+          <p>신규 계정을 등록합니다</p>
+        </section>
+      </header>
+      <form method="post" action="/admin/users/add">
+        <section class="admin-form-grid">
+          <label class="field-block">아이디
+            <input name="username" required placeholder="예: honggd">
+          </label>
+          <label class="field-block">이름
+            <input name="name" required placeholder="예: 홍길동">
+          </label>
+          <label class="field-block">부서
+            <input name="dept" placeholder="예: 경영지원팀">
+          </label>
+          <label class="field-block">직급
+            <select name="grade_id">
+              <option value="">(선택)</option>
+              {% for g in grades %}
+              <option value="{{ g.id }}">{{ g.name }}</option>
+              {% endfor %}
+            </select>
+            <input name="grade" placeholder="목록에 없으면 직접 입력" style="margin-top:6px;">
+          </label>
+          <label class="field-block">임시 비밀번호
+            <input name="temp_pw" value="changeme123!">
+            <small class="muted">최초 로그인 시 변경 강제</small>
+          </label>
+          <label class="field-block">관리자 권한
+            <select name="is_admin">
+              <option value="0" selected>일반 사용자</option>
+              <option value="1">관리자</option>
+            </select>
+          </label>
+        </section>
+        <footer class="admin-form-actions">
+          <button class="btn primary" type="submit">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            사용자 추가
+          </button>
+        </footer>
+      </form>
+    </section>
+
+    <section class="admin-section">
+      <header class="admin-section-head">
+        <span class="admin-section-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </span>
+        <section>
+          <h3>CSV 일괄 등록</h3>
+          <p>엑셀에서 보낸 CSV 업로드</p>
+        </section>
+      </header>
+      <section class="admin-callout admin-callout-detail">
+        <p><strong>1행(헤더) 컬럼명</strong> — 아래 순서·이름을 그대로 사용하세요. (대소문자 구분)</p>
+        <p class="admin-csv-cols"><code>username</code> <code>name</code> <code>dept</code> <code>grade</code> <code>is_admin</code></p>
+        <table class="admin-help-table" aria-label="CSV 컬럼 설명">
+          <thead>
+            <tr><th>컬럼</th><th>필수</th><th>설명</th><th>예시</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>username</code></td><td>○</td><td>로그인 아이디 (중복 불가)</td><td><code>honggd</code></td></tr>
+            <tr><td><code>name</code></td><td>○</td><td>표시 이름</td><td><code>홍길동</code></td></tr>
+            <tr><td><code>dept</code></td><td>—</td><td>부서 (비우면 빈 값)</td><td><code>경영지원팀</code></td></tr>
+            <tr><td><code>grade</code></td><td>—</td><td>직급명 — 「직급 관리」에 등록된 이름과 일치</td><td><code>대리</code></td></tr>
+            <tr><td><code>is_admin</code></td><td>—</td><td>관리자 여부. 비우면 일반 사용자</td><td><code>1</code> 또는 <code>0</code></td></tr>
+          </tbody>
+        </table>
+        <p><strong>예시 파일 내용</strong> (메모장·엑셀에 붙여넣은 뒤 <strong>CSV UTF-8</strong>로 저장)</p>
+        <pre class="admin-csv-sample" aria-label="CSV 예시">username,name,dept,grade,is_admin
+honggd,홍길동,경영지원팀,대리,0
+kimys,김영수,환경사업부,과장,0
+parkadmin,박관리,본사,,1</pre>
+        <ul class="admin-callout-list">
+          <li><strong>신규</strong> 아이디만 추가됩니다. 이미 있는 <code>username</code>은 건너뜁니다.</li>
+          <li>초기 비밀번호는 모두 <strong>changeme123!</strong> 이며, <strong>첫 로그인 시 변경</strong>이 강제됩니다.</li>
+          <li><code>is_admin</code>: <code>1</code>, <code>Y</code>, <code>true</code>, <code>관리자</code> 등 → 관리자 / 그 외·비움 → 일반</li>
+          <li>이름·부서에 쉼표(,)가 있으면 엑셀에서 셀을 큰따옴표로 감싸세요. 예: <code>"영동,본사"</code></li>
+          <li>엑셀 저장: <strong>다른 이름으로 저장 → CSV UTF-8(쉼표로 분리)(*.csv)</strong></li>
+        </ul>
+      </section>
+      <form method="post" action="/admin/users/import_csv" enctype="multipart/form-data">
+        <section class="file-drop">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <input type="file" name="file" accept=".csv" required>
+        </section>
+        <footer class="admin-form-actions">
+          <button class="btn primary" type="submit">CSV 업로드 · 등록</button>
+        </footer>
+      </form>
+    </section>
+  </section>
+
+  <section class="admin-section">
+    <header class="admin-section-head">
+      <span class="admin-section-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </span>
+      <section>
+        <h3>사용자 목록</h3>
+        <p>계정 수정 · 비밀번호 초기화 · 비활성화</p>
+      </section>
+    </header>
+    <section class="admin-table-wrap table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:48px;">#</th>
+            <th>아이디</th>
+            <th>이름</th>
+            <th>부서</th>
+            <th>직급</th>
+            <th style="width:72px;">관리자</th>
+            <th style="width:56px;">활성</th>
+            <th style="width:72px;">PW변경</th>
+            <th style="width:200px;">작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td class="muted">{{ u.id }}</td>
+            <td><strong>{{ u.username }}</strong></td>
+            <td>{{ u.name or '—' }}</td>
+            <td>{{ u.dept or '—' }}</td>
+            <td>{{ u.grade or '—' }}</td>
+            <td>{% if u.is_admin %}<span class="tag tag-admin">관리자</span>{% else %}<span class="tag tag-no">—</span>{% endif %}</td>
+            <td>{% if u.is_active %}<span class="tag tag-yes">활성</span>{% else %}<span class="tag tag-off">중지</span>{% endif %}</td>
+            <td>{% if u.must_change_pw %}<span class="tag tag-warn">필요</span>{% else %}<span class="tag tag-no">—</span>{% endif %}</td>
+            <td>
+              <section class="admin-actions">
+                <a class="btn btn-sm ghost" href="/admin/users/{{ u.id }}/edit">수정</a>
+                <form method="post" action="/admin/users/reset_pw" style="display:inline;margin:0;">
+                  <input type="hidden" name="user_id" value="{{ u.id }}">
+                  <button class="btn btn-sm ghost" type="submit" title="비밀번호 초기화">PW초기화</button>
+                </form>
+                {% if u.username != 'admin' %}
+                <form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;margin:0;" onsubmit="return confirm('이 사용자를 비활성화할까요?');">
+                  <button class="btn btn-sm danger" type="submit">삭제</button>
+                </form>
+                {% endif %}
+              </section>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="muted" style="text-align:center;padding:28px;">등록된 사용자가 없습니다.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+</section>
 {% endblock %}

@@ -1,6 +1,6 @@
 # 전체 수정 및 기능 추가 이력
 
-> 초기 버그 수정부터 Phase 1~4 확장까지 전체 변경 사항을 기록합니다.
+> 초기 버그 수정부터 Phase 1~5 확장까지 전체 변경 사항을 기록합니다.
 
 ---
 
@@ -155,6 +155,45 @@
 |------|------|
 | 2026-05-13 | `base.html` 네비에서 '직급' 링크 제거 (사용자 관리 페이지 내에서 접근 가능) |
 | 2026-05-14 | 품질문서 라이브러리: 버전 비교를 위한 PDF 뷰어 + 이력 테이블 배치 |
+| 2026-05-19 | **공통 UI**: `style.css` 통합, Pretendard, 상단 네비 한 줄·아이콘·active 탭, 로그인 카드형 |
+| 2026-05-19 | **시스템 관리**: `admin_users` / `admin_grades` / `admin_user_edit` + `partials/admin_nav.html`, CSV 상세 안내 |
+| 2026-05-19 | `/admin` → `/admin/users` 리다이렉트, 구독립 `admin.html` 삭제 |
+
+---
+
+## 운영·스키마 수정 (2026-05-19)
+
+| 항목 | 내용 |
+|------|------|
+| `attachments` 마이그레이션 | `uploader_id`, `filesize`, `created_at` ADD COLUMN + `uploader_id` 백필 |
+| 문서 상세 500 | 구 DB에 `uploader_id` 없어 `doc_view` 조회 실패 → 마이그레이션으로 해결 |
+| `doc_view` | `selectinload`로 출장/업무일지 lines eager load (완료 문서 보기 안정화) |
+| DB 파일명 문서 정정 | 실제 경로 `data/app.db` (README·ARCHITECTURE 반영) |
+
+### 문서 체계 (2026-05-19 상세 반영)
+
+| 문서 | 역할 |
+|------|------|
+| `README.md` | 설치·메뉴·CSV·회계·migrate·문제 해결 |
+| `docs/REFERENCE.md` | **전체 라우트·상태·22 DB 모델·관리 API 갭** |
+| `docs/ARCHITECTURE.md` | 흐름도·migrate 12단계·UI 클래스 |
+| `docs/DEVELOPMENT_PLAN.md` | Phase 이력·후속 작업(관리 POST) |
+
+---
+
+## Phase 5 — 회계 (2026-05-19)
+
+| 하위 | 내용 |
+|------|------|
+| 5.1 | `Region`, `Collection` 테이블, `trip_reports.region_id`, `migrate_schema` 시드 |
+| 5.2 | 출장 지역 드롭다운·`/api/regions`, `APPROVED_FINAL`, `query_trip_billing_lines()` |
+| 5.3 | `/accounting/dashboard` 일월계표 (일·월·**분기**·**연별**) |
+| 5.4 | `/accounting/ledger` 미수금대장, `POST /api/collections`, PDF(html2pdf.js) |
+
+**Phase 5.5 없음** — 위 범위로 Phase 5 종료.
+
+### 수정·신규 파일
+- `app/main.py`, `doc_new.html`, `doc.html`, `accounting_dashboard.html`, `accounting_ledger.html`, `base.html`
 
 ---
 
@@ -166,3 +205,7 @@
 | 2026-05-14 | `docs/ARCHITECTURE.md` 신규 — 파일 구조, DB 스키마, 라우트 맵, 작동 로직 |
 | 2026-05-14 | `docs/DEVELOPMENT_PLAN.md` 갱신 — Phase 4-v2 반영, 전체 정리 |
 | 2026-05-14 | `FIXES_SUMMARY.md` 갱신 — 초기 수정 + Phase 1~4 전체 통합 |
+| 2026-05-19 | Phase 5 회계 모듈 문서 전반 갱신 |
+| 2026-05-19 | UI 개편·시스템 관리·CSV 안내·`attachments` 마이그레이션 문서 반영 |
+| 2026-05-19 | **`docs/REFERENCE.md` 신규** — README/ARCHITECTURE/DEVELOPMENT_PLAN 전면 상세 보강 |
+| 2026-05-19 | **관리 POST API** — `/admin/users/*`, `/admin/grades/*` 핸들러 추가 |

@@ -12,8 +12,15 @@ approval_mvp - single-file FastAPI MVP
 """
 
 import os
-from datetime import datetime, timezone, timedelta
+import json
+import csv
+import io
+from urllib.parse import quote
+from datetime import datetime, timezone, timedelta, date
+from calendar import monthrange
 from typing import Optional, List, Tuple
+
+from markupsafe import Markup
 
 from fastapi import FastAPI, Request, Depends, Form, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
@@ -21,9 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey
+    create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, func, case, and_, or_
 )
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session, joinedload
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
 
 from passlib.hash import pbkdf2_sha256
@@ -31,8 +38,8 @@ from itsdangerous import URLSafeSerializer, BadSignature
 
 import uuid
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+from pypdf import PdfReader, PdfWriter
+from xhtml2pdf import pisa
 
 
 # ---------------------------
@@ -41,6 +48,7 @@ from reportlab.pdfgen import canvas
 APP_SECRET = os.getenv("APP_SECRET", "change-me-long-random")
 ADMIN_ID = os.getenv("APP_ADMIN_ID", "admin")
 ADMIN_PW = os.getenv("APP_ADMIN_PW", "admin1234!")
+ADMIN_DEFAULT_PW = "changeme123!"
 # 기본 데이터 디렉터리를 워크스페이스의 ./data 폴더로 설정 (로컬 테스트용)
 DEFAULT_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 DATA_DIR = os.getenv("APP_DATA_DIR", DEFAULT_DATA_DIR)
@@ -76,6 +84,19 @@ def _ensure_table_exists(conn, table: str) -> bool:
         f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
     )).fetchall()
     return len(rows) > 0
+
+_DEFAULT_REGION_NAMES = ("원주", "제천", "단양")
+
+def _seed_default_regions(conn) -> None:
+    """regions 테이블이 비어 있으면 기본 지역명을 삽입."""
+    if not _ensure_table_exists(conn, "regions"):
+        return
+    count = conn.execute(_sql_text("SELECT COUNT(*) FROM regions")).scalar() or 0
+    if count > 0:
+        return
+    for name in _DEFAULT_REGION_NAMES:
+        conn.execute(_sql_text("INSERT INTO regions (name) VALUES (:name)"), {"name": name})
+    print(f"[migrate] seeded {len(_DEFAULT_REGION_NAMES)} default regions")
 
 def migrate_schema():
     """기존 DB 파일을 유지하면서, 코드에 추가된 컬럼이 없으면 ADD COLUMN으로 보강."""
@@ -115,6 +136,18 @@ def migrate_schema():
             _ensure_column(conn, "grades", "level", "INTEGER DEFAULT 1")
             _ensure_column(conn, "grades", "is_active", "INTEGER DEFAULT 1")
 
+            # ── 기존 attachments 테이블 (구 스키마 보강) ──
+            if _ensure_table_exists(conn, "attachments"):
+                _ensure_column(conn, "attachments", "uploader_id", "INTEGER")
+                _ensure_column(conn, "attachments", "filesize", "INTEGER DEFAULT 0")
+                _ensure_column(conn, "attachments", "created_at", "TEXT DEFAULT (datetime('now'))")
+                # uploader_id 없던 기존 행 → 문서 작성자로 보정
+                conn.execute(_sql_text(
+                    "UPDATE attachments SET uploader_id = ("
+                    "  SELECT creator_id FROM documents WHERE documents.id = attachments.doc_id"
+                    ") WHERE uploader_id IS NULL"
+                ))
+
             # ── Phase 1 신규: schedules ──
             if _ensure_table_exists(conn, "schedules"):
                 _ensure_column(conn, "schedules", "color", "TEXT DEFAULT ''")
@@ -137,6 +170,24 @@ def migrate_schema():
                 _ensure_column(conn, "quality_docs", "uploader_id", "INTEGER")
                 _ensure_column(conn, "quality_docs", "original_filename", "TEXT DEFAULT ''")
                 _ensure_column(conn, "quality_docs", "archive_path", "TEXT DEFAULT ''")
+
+            # ── Phase 5: 지역(regions) / 수금(collections) / 출장복명서 지역 FK ──
+            if _ensure_table_exists(conn, "trip_reports"):
+                _ensure_column(conn, "trip_reports", "region_id", "INTEGER")
+
+            if _ensure_table_exists(conn, "collections"):
+                _ensure_column(conn, "collections", "company_name", "TEXT DEFAULT ''")
+                _ensure_column(conn, "collections", "region_name", "TEXT DEFAULT ''")
+                _ensure_column(conn, "collections", "amount", "INTEGER DEFAULT 0")
+                _ensure_column(conn, "collections", "collection_date", "TEXT DEFAULT ''")
+                _ensure_column(conn, "collections", "note", "TEXT DEFAULT ''")
+
+            _seed_default_regions(conn)
+
+            # 기존 결재완료 문서 → APPROVED_FINAL (회계 집계·완료함 호환)
+            conn.execute(_sql_text(
+                "UPDATE documents SET status = 'APPROVED_FINAL' WHERE status = 'APPROVED'"
+            ))
 
             print("[migrate] schema migration completed successfully")
     except Exception as e:
@@ -267,6 +318,19 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), default=now)
     sender = relationship("User", foreign_keys=[sender_id])
     receiver = relationship("User", foreign_keys=[receiver_id])
+    attachments = relationship("MessageAttachment", back_populates="message", cascade="all, delete-orphan")
+
+class MessageAttachment(Base):
+    __tablename__ = "message_attachments"
+    id = Column(Integer, primary_key=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False)
+    uploader_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    filepath = Column(String(255), nullable=False)
+    filesize = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=now)
+    message = relationship("Message", back_populates="attachments")
+    uploader = relationship("User")
 
 class Attachment(Base):
     __tablename__ = "attachments"
@@ -355,6 +419,28 @@ class WorkLogLine(Base):
     worklog = relationship("WorkLog", back_populates="lines")
 
 
+# ---------------------------
+# Phase 5: 회계(지역 정규화 · 수금)
+# ---------------------------
+
+class Region(Base):
+    """출장/회계 지역 마스터 — 데이터 파편화 방지용 정규 테이블"""
+    __tablename__ = "regions"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(50), unique=True, nullable=False)
+
+
+class Collection(Base):
+    """수금 내역 — 미수금대장·일월계표의 수금 집계 원천"""
+    __tablename__ = "collections"
+    id = Column(Integer, primary_key=True)
+    company_name = Column(String(100), nullable=False, default="")
+    region_name = Column(String(50), nullable=False, default="")  # regions.name 과 텍스트 매칭
+    amount = Column(Integer, nullable=False, default=0)
+    collection_date = Column(String(10), nullable=False, default="")
+    note = Column(Text, nullable=False, default="")
+
+
 class TripReport(Base):
     """출장복명서/세금계산서 헤더 — Document(doc_type=TRIP_REPORT)와 1:1"""
     __tablename__ = "trip_reports"
@@ -363,11 +449,13 @@ class TripReport(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     trip_date = Column(String(10), nullable=False, default="")
     destination = Column(String(200), nullable=False, default="")
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
     purpose = Column(Text, nullable=False, default="")
     registration_file_path = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
     doc = relationship("Document", foreign_keys=[doc_id], backref="trip_report")
     user = relationship("User", foreign_keys=[user_id])
+    region = relationship("Region", foreign_keys=[region_id])
     lines = relationship("TripReportLine", back_populates="trip_report",
                          cascade="all, delete-orphan", order_by="TripReportLine.order_no")
 
@@ -408,6 +496,402 @@ class QualityDoc(Base):
     uploader = relationship("User", foreign_keys=[uploader_id])
 
 
+def query_trip_billing_lines(db: Session, *, date_from: str = "", date_to: str = "", region_id: Optional[int] = None):
+    """최종 승인(APPROVED_FINAL) 출장복명서 라인만 — 회계 청구액 집계용."""
+    q = (
+        db.query(TripReportLine)
+        .join(TripReport, TripReportLine.trip_report_id == TripReport.id)
+        .join(Document, TripReport.doc_id == Document.id)
+        .filter(Document.doc_type == "TRIP_REPORT")
+        .filter(Document.status == "APPROVED_FINAL")
+        .filter(Document.is_deleted == False)
+    )
+    if date_from:
+        q = q.filter(TripReportLine.line_date >= date_from)
+    if date_to:
+        q = q.filter(TripReportLine.line_date <= date_to)
+    if region_id is not None:
+        q = q.filter(TripReport.region_id == region_id)
+    return q
+
+
+def trip_line_billing_amount(line: TripReportLine) -> int:
+    """청구액 = 외상금액 + 현금금액"""
+    return int(line.credit_amount or 0) + int(line.cash_amount or 0)
+
+
+def _trip_billing_amount_expr():
+    return TripReportLine.credit_amount + TripReportLine.cash_amount
+
+
+def _parse_accounting_period(request: Request) -> Tuple[str, str, str, str]:
+    """(mode, date_from, date_to, ref) — mode: day | month | quarter | year"""
+    mode = (request.query_params.get("mode") or "month").strip()
+    if mode not in ("day", "month", "quarter", "year"):
+        mode = "month"
+    today = datetime.now().strftime("%Y-%m-%d")
+    y_now, m_now = int(today[:4]), int(today[5:7])
+    if mode == "day":
+        ref = (request.query_params.get("date") or today).strip()[:10]
+        return mode, ref, ref, ref
+    if mode == "year":
+        try:
+            y = int((request.query_params.get("year") or str(y_now)).strip()[:4])
+        except (ValueError, TypeError):
+            y = y_now
+        ref = f"{y:04d}"
+        return mode, f"{y:04d}-01-01", f"{y:04d}-12-31", ref
+    if mode == "quarter":
+        try:
+            y = int((request.query_params.get("year") or str(y_now)).strip()[:4])
+        except (ValueError, TypeError):
+            y = y_now
+        try:
+            q = int((request.query_params.get("quarter") or str((m_now - 1) // 3 + 1)).strip())
+        except (ValueError, TypeError):
+            q = (m_now - 1) // 3 + 1
+        q = max(1, min(4, q))
+        start_m = (q - 1) * 3 + 1
+        end_m = start_m + 2
+        date_from = f"{y:04d}-{start_m:02d}-01"
+        last_day = monthrange(y, end_m)[1]
+        date_to = f"{y:04d}-{end_m:02d}-{last_day:02d}"
+        ref = f"{y:04d}-Q{q}"
+        return mode, date_from, date_to, ref
+    ref = (request.query_params.get("month") or today[:7]).strip()[:7]
+    try:
+        y, mo = map(int, ref.split("-"))
+        last_day = monthrange(y, mo)[1]
+        date_from = f"{y:04d}-{mo:02d}-01"
+        date_to = f"{y:04d}-{mo:02d}-{last_day:02d}"
+    except (ValueError, TypeError):
+        ref = today[:7]
+        date_from = ref + "-01"
+        date_to = today
+    return mode, date_from, date_to, ref
+
+
+def _accounting_period_label(mode: str, ref: str, date_from: str, date_to: str) -> str:
+    span = f"{date_from} ~ {date_to}"
+    if mode == "day":
+        try:
+            d = date.fromisoformat(ref[:10])
+            return f"{d.year}년 {d.month}월 {d.day}일 ({span})"
+        except ValueError:
+            return f"{ref} ({span})"
+    if mode == "quarter" and "-Q" in ref:
+        y_s, q_s = ref.split("-Q", 1)
+        return f"{y_s}년 {q_s}분기 ({span})"
+    if mode == "year":
+        try:
+            y = int(ref[:4])
+            return f"{y}년 ({span})"
+        except ValueError:
+            return f"{ref}년 ({span})"
+    if mode == "month" and len(ref) >= 7:
+        try:
+            y, mo = ref[:7].split("-", 1)
+            return f"{int(y)}년 {int(mo)}월 ({span})"
+        except ValueError:
+            pass
+    return f"{ref} ({span})"
+
+
+def _iter_days(date_from: str, date_to: str):
+    try:
+        cur = date.fromisoformat(date_from)
+        end = date.fromisoformat(date_to)
+    except ValueError:
+        return
+    while cur <= end:
+        yield cur.isoformat()
+        cur += timedelta(days=1)
+
+
+def _iter_months(date_from: str, date_to: str):
+    try:
+        d0 = date.fromisoformat(date_from)
+        d1 = date.fromisoformat(date_to)
+        cur = date(d0.year, d0.month, 1)
+        end = date(d1.year, d1.month, 1)
+    except ValueError:
+        return
+    while cur <= end:
+        yield f"{cur.year:04d}-{cur.month:02d}"
+        if cur.month == 12:
+            cur = date(cur.year + 1, 1, 1)
+        else:
+            cur = date(cur.year, cur.month + 1, 1)
+
+
+def _sum_trip_billing(db: Session, date_from: str, date_to: str) -> int:
+    expr = _trip_billing_amount_expr()
+    return int(
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        .with_entities(func.coalesce(func.sum(expr), 0))
+        .scalar()
+        or 0
+    )
+
+
+def _sum_collections(db: Session, date_from: str = "", date_to: str = "") -> int:
+    q = db.query(func.coalesce(func.sum(Collection.amount), 0))
+    if date_from:
+        q = q.filter(Collection.collection_date >= date_from)
+    if date_to:
+        q = q.filter(Collection.collection_date <= date_to)
+    return int(q.scalar() or 0)
+
+
+def _cumulative_receivable(db: Session, as_of: str) -> int:
+    """기준일까지 누적 미수 잔액 = 전체 청구(최종승인) − 전체 수금."""
+    if not as_of:
+        return 0
+    billing = _sum_trip_billing(db, "", as_of)
+    collection = _sum_collections(db, "", as_of)
+    return billing - collection
+
+
+def _bucket_end_date(bucket: str, mode: str, date_to: str) -> str:
+    if mode == "month" and len(bucket) >= 10:
+        return bucket[:10]
+    if mode in ("quarter", "year") and len(bucket) == 7:
+        try:
+            y, mo = map(int, bucket.split("-", 1))
+            last_day = monthrange(y, mo)[1]
+            end = f"{y:04d}-{mo:02d}-{last_day:02d}"
+            return end if end <= date_to else date_to
+        except (ValueError, TypeError):
+            pass
+    return date_to
+
+
+def _receivable_at_end_dates(db: Session, end_dates: List[str]) -> dict[str, int]:
+    if not end_dates:
+        return {}
+    max_end = max(end_dates)
+    bill_daily = _billing_by_day(db, "2000-01-01", max_end)
+    coll_daily = _collections_by_day(db, "2000-01-01", max_end)
+    event_dates = sorted(set(bill_daily) | set(coll_daily))
+    running_b = running_c = 0
+    ei = 0
+    result: dict[str, int] = {}
+    for target in sorted(set(end_dates)):
+        while ei < len(event_dates) and event_dates[ei] <= target:
+            d = event_dates[ei]
+            running_b += bill_daily.get(d, 0)
+            running_c += coll_daily.get(d, 0)
+            ei += 1
+        result[target] = running_b - running_c
+    return result
+
+
+def _billing_by_day(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+    expr = _trip_billing_amount_expr()
+    rows = (
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        .with_entities(
+            TripReportLine.line_date.label("day"),
+            func.coalesce(func.sum(expr), 0).label("amount"),
+        )
+        .group_by(TripReportLine.line_date)
+        .all()
+    )
+    return {str(r.day or ""): int(r.amount) for r in rows}
+
+
+def _collections_by_day(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+    rows = (
+        db.query(
+            Collection.collection_date.label("day"),
+            func.coalesce(func.sum(Collection.amount), 0).label("amount"),
+        )
+        .filter(
+            Collection.collection_date >= date_from,
+            Collection.collection_date <= date_to,
+        )
+        .group_by(Collection.collection_date)
+        .all()
+    )
+    return {str(r.day or ""): int(r.amount) for r in rows}
+
+
+def _billing_by_month(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+    expr = _trip_billing_amount_expr()
+    month_key = func.substr(TripReportLine.line_date, 1, 7)
+    rows = (
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        .with_entities(
+            month_key.label("month"),
+            func.coalesce(func.sum(expr), 0).label("amount"),
+        )
+        .group_by(month_key)
+        .all()
+    )
+    return {str(r.month or ""): int(r.amount) for r in rows}
+
+
+def _collections_by_month(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+    month_key = func.substr(Collection.collection_date, 1, 7)
+    rows = (
+        db.query(
+            month_key.label("month"),
+            func.coalesce(func.sum(Collection.amount), 0).label("amount"),
+        )
+        .filter(
+            Collection.collection_date >= date_from,
+            Collection.collection_date <= date_to,
+        )
+        .group_by(month_key)
+        .all()
+    )
+    return {str(r.month or ""): int(r.amount) for r in rows}
+
+
+def _accounting_flow_rows(
+    db: Session, mode: str, date_from: str, date_to: str
+) -> List[dict]:
+    out: List[dict] = []
+    if mode == "month":
+        billing_map = _billing_by_day(db, date_from, date_to)
+        collection_map = _collections_by_day(db, date_from, date_to)
+        buckets = list(_iter_days(date_from, date_to))
+    elif mode in ("quarter", "year"):
+        billing_map = _billing_by_month(db, date_from, date_to)
+        collection_map = _collections_by_month(db, date_from, date_to)
+        buckets = list(_iter_months(date_from, date_to))
+    else:
+        return out
+    end_dates = [_bucket_end_date(b, mode, date_to) for b in buckets]
+    receivable_map = _receivable_at_end_dates(db, end_dates)
+    for bucket in buckets:
+        billing = billing_map.get(bucket, 0)
+        collection = collection_map.get(bucket, 0)
+        end = _bucket_end_date(bucket, mode, date_to)
+        out.append({
+            "bucket": bucket,
+            "billing": billing,
+            "collection": collection,
+            "net": billing - collection,
+            "receivable": receivable_map.get(end, 0),
+        })
+    return out
+
+
+def _parse_ledger_month(request: Request) -> Tuple[str, str, str]:
+    """(month_ref YYYY-MM, month_start, month_end)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    ref = (request.query_params.get("month") or today[:7]).strip()[:7]
+    try:
+        y, mo = map(int, ref.split("-"))
+        last_day = monthrange(y, mo)[1]
+        return ref, f"{y:04d}-{mo:02d}-01", f"{y:04d}-{mo:02d}-{last_day:02d}"
+    except (ValueError, TypeError):
+        ref = today[:7]
+        return ref, ref + "-01", today
+
+
+def _build_ledger_rows(
+    db: Session,
+    month_start: str,
+    month_end: str,
+    *,
+    region_id: Optional[int] = None,
+    company_q: str = "",
+) -> List[dict]:
+    expr = _trip_billing_amount_expr()
+    region_name_expr = func.coalesce(Region.name, "")
+    billing_q = (
+        query_trip_billing_lines(db)
+        .outerjoin(Region, TripReport.region_id == Region.id)
+    )
+    if region_id is not None:
+        billing_q = billing_q.filter(TripReport.region_id == region_id)
+    if company_q:
+        billing_q = billing_q.filter(TripReportLine.company_name.ilike(f"%{company_q}%"))
+    billing_rows = billing_q.with_entities(
+        TripReportLine.company_name,
+        region_name_expr.label("region_name"),
+        func.coalesce(
+            func.sum(case((TripReportLine.line_date < month_start, expr), else_=0)), 0
+        ).label("billing_before"),
+        func.coalesce(
+            func.sum(case((
+                and_(TripReportLine.line_date >= month_start, TripReportLine.line_date <= month_end),
+                expr,
+            ), else_=0)),
+            0,
+        ).label("billing_current"),
+    ).group_by(TripReportLine.company_name, region_name_expr).all()
+
+    coll_q = db.query(Collection)
+    if region_id is not None:
+        reg = db.query(Region).filter(Region.id == region_id).first()
+        if reg:
+            coll_q = coll_q.filter(Collection.region_name == reg.name)
+    if company_q:
+        coll_q = coll_q.filter(Collection.company_name.ilike(f"%{company_q}%"))
+    coll_rows = coll_q.with_entities(
+        Collection.company_name,
+        Collection.region_name,
+        func.coalesce(
+            func.sum(case((Collection.collection_date < month_start, Collection.amount), else_=0)), 0
+        ).label("coll_before"),
+        func.coalesce(
+            func.sum(case((
+                and_(Collection.collection_date >= month_start, Collection.collection_date <= month_end),
+                Collection.amount,
+            ), else_=0)),
+            0,
+        ).label("coll_current"),
+    ).group_by(Collection.company_name, Collection.region_name).all()
+
+    merged: dict[Tuple[str, str], dict] = {}
+
+    def _key(company: str, region: str) -> Tuple[str, str]:
+        return ((company or "").strip(), (region or "").strip())
+
+    def _ensure(company: str, region: str) -> dict:
+        k = _key(company, region)
+        if k not in merged:
+            merged[k] = {
+                "company_name": company or "-",
+                "region_name": region or "-",
+                "opening": 0,
+                "billing_current": 0,
+                "collection_current": 0,
+            }
+        return merged[k]
+
+    for r in billing_rows:
+        row = _ensure(str(r.company_name or ""), str(r.region_name or ""))
+        row["opening"] += int(r.billing_before or 0)
+        row["billing_current"] += int(r.billing_current or 0)
+    for r in coll_rows:
+        row = _ensure(str(r.company_name or ""), str(r.region_name or ""))
+        row["opening"] -= int(r.coll_before or 0)
+        row["collection_current"] += int(r.coll_current or 0)
+
+    out: List[dict] = []
+    for row in merged.values():
+        opening = int(row["opening"])
+        billing = int(row["billing_current"])
+        collection = int(row["collection_current"])
+        balance = opening + billing - collection
+        if balance == 0 and not (billing or collection):
+            continue
+        out.append({
+            "company_name": row["company_name"],
+            "region_name": row["region_name"],
+            "opening": opening,
+            "billing_current": billing,
+            "collection_current": collection,
+            "balance": balance,
+        })
+    out.sort(key=lambda x: (x["region_name"], x["company_name"]))
+    return out
+
+
 # ---------------------------
 # FastAPI
 # ---------------------------
@@ -416,8 +900,17 @@ app = FastAPI(title="approval_mvp")
 # ------------------------------------------------------------
 # 표시용(한글) - 템플릿에서 쓰기 편하게 함수로 제공
 # ------------------------------------------------------------
+DOC_FINAL_STATUSES = ("APPROVED", "APPROVED_FINAL")
+
+def is_doc_final(status: str) -> bool:
+    return (status or "") in DOC_FINAL_STATUSES
+
 def status_ko(status: str) -> str:
-    return {"DRAFT": "작성중", "WAITING": "대기", "IN_PROGRESS": "결재중", "IN_REVIEW": "결재중", "APPROVED": "완료", "REJECTED": "반려", "DELETED": "삭제"}.get(status or "", status or "-")
+    return {
+        "DRAFT": "작성중", "WAITING": "대기", "IN_PROGRESS": "결재중", "IN_REVIEW": "결재중",
+        "APPROVED": "결재완료", "APPROVED_FINAL": "결재완료", "REJECTED": "반려", "DELETED": "삭제",
+        "SUBMITTED": "결재중", "FINAL_LOCKED": "결재완료",
+    }.get(status or "", status or "-")
 
 def mode_ko(mode: str) -> str:
     return {"SEQUENTIAL": "순차", "PARALLEL": "병렬"}.get(mode or "", mode or "-")
@@ -443,6 +936,15 @@ def schedule_type_ko(st: str) -> str:
     return SCHEDULE_TYPES.get(st or "", st or "-")
 
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+
+def _jinja_tojson(val) -> Markup:
+    return Markup(json.dumps(val, ensure_ascii=False))
+
+
+templates.env.filters["tojson"] = _jinja_tojson
+templates.env.filters["status_ko"] = status_ko
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -487,6 +989,59 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user or not bool(user.is_admin):
         raise HTTPException(403, "관리자 권한이 필요합니다.")
     return user
+
+
+def _is_truthy_admin(val) -> bool:
+    if val is None:
+        return False
+    s = str(val).strip().lower()
+    return s in ("1", "y", "yes", "true", "on", "admin", "관리자")
+
+
+def _resolve_user_grade(db: Session, grade_id_raw: str, grade_text: str) -> str:
+    text = (grade_text or "").strip()
+    if grade_id_raw:
+        try:
+            gid = int(str(grade_id_raw).strip())
+            g = db.query(Grade).filter(Grade.id == gid, Grade.is_active == True).first()
+            if g:
+                return g.name
+        except (TypeError, ValueError):
+            pass
+    return text
+
+
+def _lookup_grade_name(db: Session, grade_cell: str) -> str:
+    """CSV grade: 직급명 또는 숫자 id."""
+    cell = (grade_cell or "").strip()
+    if not cell:
+        return ""
+    if cell.isdigit():
+        g = db.query(Grade).filter(Grade.id == int(cell), Grade.is_active == True).first()
+        return g.name if g else ""
+    g = db.query(Grade).filter(Grade.name == cell, Grade.is_active == True).first()
+    return g.name if g else cell
+
+
+def _count_active_admins(db: Session, exclude_user_id: Optional[int] = None) -> int:
+    q = db.query(User).filter(User.is_admin == True, User.is_active == True)
+    if exclude_user_id is not None:
+        q = q.filter(User.id != exclude_user_id)
+    return q.count()
+
+
+def _admin_redirect_users(message: str = "") -> RedirectResponse:
+    url = "/admin/users"
+    if message:
+        url += "?flash=" + quote(message, safe="")
+    return RedirectResponse(url, status_code=303)
+
+
+def _admin_redirect_grades(message: str = "") -> RedirectResponse:
+    url = "/admin/grades"
+    if message:
+        url += "?flash=" + quote(message, safe="")
+    return RedirectResponse(url, status_code=303)
 
 # ------------------------------------------------------------
 # 권한 유틸
@@ -544,7 +1099,7 @@ def update_doc_status_after_action(db: Session, doc: Document):
         setattr(doc, 'status', "REJECTED")
         _on_doc_rejected(db, doc)
     elif approvers and all(a.action == "APPROVED" for a in approvers):
-        setattr(doc, 'status', "APPROVED")
+        setattr(doc, 'status', "APPROVED_FINAL")
         _on_doc_approved(db, doc)
     else:
         setattr(doc, 'status', "IN_REVIEW")
@@ -651,35 +1206,300 @@ def _quality_doc_finalize(db: Session, doc: Document):
             print(f"[quality] archive failed: {e}")
 
 
-def _generate_final_pdf(doc: Document) -> Optional[str]:
+def _resolve_grade_name(db: Session, user: Optional[User]) -> str:
+    if not user:
+        return "-"
+    raw = (user.grade or "").strip()
+    if not raw:
+        return "-"
+    gr = db.query(Grade).filter(Grade.name == raw, Grade.is_active == True).first()
+    return gr.name if gr else raw
+
+
+def _fmt_acted_at_pdf(dt: Optional[datetime]) -> str:
+    """결재란 PDF용 시각 (예: 05/14 14:32)."""
+    if not dt:
+        return ""
     try:
-        final_dir = os.path.join(DATA_DIR, 'final')
+        return dt.astimezone().strftime("%m/%d %H:%M")
+    except Exception:
+        return str(dt)[:16]
+
+
+def _fetch_approved_approvers_for_pdf(db: Session, doc_id: int) -> List[dict]:
+    """order_no 오름차순 · APPROVED 결재자만 (최종 승인 완료 건)."""
+    rows = (
+        db.query(Approver)
+        .options(joinedload(Approver.approver))
+        .filter(Approver.doc_id == doc_id, Approver.action == "APPROVED")
+        .order_by(Approver.order_no.asc())
+        .all()
+    )
+    out: List[dict] = []
+    for ap in rows:
+        u = ap.approver
+        out.append({
+            "order_no": ap.order_no,
+            "grade": _resolve_grade_name(db, u),
+            "name": (u.name if u else "-"),
+            "acted_at": _fmt_acted_at_pdf(ap.acted_at) or "-",
+        })
+    return out
+
+
+def _nanum_font_path() -> str:
+    """컨테이너 fonts-nanum 경로 (xhtml2pdf 한글 임베딩용)."""
+    candidates = (
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothicRegular.ttf",
+        "/usr/share/fonts/opentype/nanum/NanumGothic.otf",
+    )
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _pdf_link_callback(uri: str, rel: str) -> str:
+    if uri in ("pdf-korean.ttf", "NanumGothic.ttf"):
+        return _nanum_font_path() or uri
+    return uri
+
+
+def _render_pdf_html(template_name: str, context: dict) -> bytes:
+    font_path = _nanum_font_path()
+    if not font_path:
+        print("[pdf] WARNING: Nanum Gothic not found — Korean may render as boxes")
+    html = templates.env.get_template(template_name).render(context)
+    buf = BytesIO()
+    status = pisa.CreatePDF(
+        io.BytesIO(html.encode("utf-8")),
+        dest=buf,
+        encoding="utf-8",
+        link_callback=_pdf_link_callback,
+    )
+    if status.err:
+        raise RuntimeError(f"PDF HTML 변환 실패: {template_name}")
+    return buf.getvalue()
+
+
+def _approval_overlay_pdf_bytes(db: Session, doc_id: int, page_w: float, page_h: float) -> bytes:
+    return _render_pdf_html(
+        "pdf/approval_overlay.html",
+        {
+            "approvers": _fetch_approved_approvers_for_pdf(db, doc_id),
+            "page_width_pt": round(page_w, 2),
+            "page_height_pt": round(page_h, 2),
+        },
+    )
+
+
+def _generate_final_pdf_text(db: Session, doc: Document, final_path: str) -> None:
+    data = _render_pdf_html(
+        "pdf/final_document.html",
+        {
+            "doc": doc,
+            "approvers": _fetch_approved_approvers_for_pdf(db, doc.id),
+        },
+    )
+    with open(final_path, "wb") as out:
+        out.write(data)
+
+
+def _generate_final_pdf_from_attachment(db: Session, doc: Document, src_path: str, final_path: str) -> None:
+    reader = PdfReader(src_path)
+    if not reader.pages:
+        _generate_final_pdf_text(db, doc, final_path)
+        return
+    w = float(reader.pages[0].mediabox.width)
+    h = float(reader.pages[0].mediabox.height)
+    stamp_reader = PdfReader(BytesIO(_approval_overlay_pdf_bytes(db, doc.id, w, h)))
+    stamp_page = stamp_reader.pages[0]
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i == 0:
+            page.merge_page(stamp_page)
+        writer.add_page(page)
+    with open(final_path, "wb") as out:
+        writer.write(out)
+
+
+def _generate_final_pdf(db: Session, doc: Document) -> Optional[str]:
+    try:
+        final_dir = os.path.join(DATA_DIR, "final")
         os.makedirs(final_dir, exist_ok=True)
         final_path = os.path.join(final_dir, f"final_{doc.id}.pdf")
-        c = canvas.Canvas(final_path, pagesize=A4)
-        width, height = A4
-        ts = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M')
-        header_text = f"최종 승인    {ts}"
-        c.setFont("Helvetica", 10)
-        c.drawRightString(width - 40, height - 40, header_text)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, height - 80, doc.title or '')
-        c.setFont("Helvetica", 11)
-        y = height - 110
-        for line in (doc.body or '').split('\n'):
-            if y < 80:
-                c.showPage()
-                y = height - 80
-            c.drawString(50, y, line[:120])
-            y -= 16
-        c.save()
+        att = _first_attachment(db, doc.id)
+        if att and att.filepath.lower().endswith(".pdf") and os.path.isfile(att.filepath):
+            _generate_final_pdf_from_attachment(db, doc, att.filepath, final_path)
+        else:
+            _generate_final_pdf_text(db, doc, final_path)
         return final_path
-    except Exception:
+    except Exception as e:
+        print(f"[final_pdf] doc={doc.id} failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def _first_attachment(db: Session, doc_id: int) -> Optional[Attachment]:
     return db.query(Attachment).filter(Attachment.doc_id == doc_id).order_by(Attachment.id.asc()).first()
+
+
+DEMO_COMPLETED_TITLE = "[예시] 결재란 PDF 확인용 테스트문서"
+DEMO_COMPLETED_BODY = """[결재란 PDF 예시 문서]
+
+이 문서는 전자결재 최종 승인 후 생성되는 PDF 우측 상단에
+결재선(직급 · 성명 · 결재일시)이 가로로 표시되는지 확인하기 위한 샘플입니다.
+
+■ 요청 내용
+· 2026년 1분기 현장 점검 결과 보고
+· 관련 비용 및 일정은 별첨 참조
+
+■ 확인 방법
+1. [완료문서] 목록에서 이 문서 선택
+2. [PDF 다운로드] 클릭 → 우측 상단 결재란 4칸(사원→과장→부장→대표, 직급 낮은 순 결재) 확인
+
+※ 실제 업무 문서가 아닌 시스템 점검용 예시입니다.
+"""
+
+# order_no 1→4: 직급 낮은 사람이 먼저 결재, 높은 사람이 나중에 결재
+_DEMO_APPROVER_ACCOUNTS = (
+    ("demo_ap4", "최사원", "사원"),
+    ("demo_ap1", "김과장", "과장"),
+    ("demo_ap2", "이부장", "부장"),
+    ("demo_ap3", "박대표", "대표"),
+)
+
+
+def _ensure_grade_row(db: Session, name: str) -> None:
+    if not db.query(Grade).filter(Grade.name == name).first():
+        db.add(Grade(name=name, is_active=True))
+
+
+def _ensure_demo_approver_user(db: Session, username: str, name: str, grade: str) -> User:
+    _ensure_grade_row(db, grade)
+    u = db.query(User).filter(User.username == username).first()
+    if not u:
+        u = User(
+            username=username,
+            name=name,
+            grade=grade,
+            is_active=True,
+            password_hash=hash_pw(ADMIN_DEFAULT_PW),
+            must_change_pw=False,
+        )
+        db.add(u)
+        db.flush()
+    else:
+        u.name = name
+        u.grade = grade
+        u.is_active = True
+    return u
+
+
+def seed_demo_completed_pdf_sample(db: Session) -> Optional[int]:
+    """완료함 '테스트' 문서를 결재란 PDF 예시용으로 갱신 (없으면 생성)."""
+    admin = db.query(User).filter(User.username == ADMIN_ID).first()
+    if not admin:
+        return None
+
+    doc = (
+        db.query(Document)
+        .filter(Document.is_deleted == False)
+        .filter(
+            or_(
+                Document.title.ilike("%테스트%"),
+                Document.title.ilike("%test%"),
+                Document.title == DEMO_COMPLETED_TITLE,
+                Document.doc_no == "DEMO-001",
+            )
+        )
+        .order_by(Document.id.desc())
+        .first()
+    )
+    if not doc:
+        doc = Document(
+            title=DEMO_COMPLETED_TITLE,
+            body="",
+            creator_id=admin.id,
+            status="APPROVED_FINAL",
+            mode="SEQUENTIAL",
+            doc_type="GENERAL",
+            doc_no="DEMO-001",
+        )
+        db.add(doc)
+        db.flush()
+
+    doc.title = DEMO_COMPLETED_TITLE
+    doc.body = DEMO_COMPLETED_BODY
+    doc.status = "APPROVED_FINAL"
+    doc.mode = "SEQUENTIAL"
+    doc.doc_type = "GENERAL"
+    if not (doc.doc_no or "").strip():
+        doc.doc_no = f"DEMO-{doc.id:04d}"
+    doc.updated_at = now()
+
+    demo_users: List[User] = []
+    for username, name, grade in _DEMO_APPROVER_ACCOUNTS:
+        demo_users.append(_ensure_demo_approver_user(db, username, name, grade))
+
+    db.query(Approver).filter(Approver.doc_id == doc.id).delete(synchronize_session=False)
+
+    base = now() - timedelta(days=5)
+    acted_offsets = (
+        timedelta(hours=9, minutes=30),
+        timedelta(hours=11, minutes=15),
+        timedelta(days=1, hours=14, minutes=32),
+        timedelta(days=1, hours=16, minutes=5),
+    )
+    for i, u in enumerate(demo_users):
+        db.add(
+            Approver(
+                doc_id=doc.id,
+                approver_id=u.id,
+                order_no=i + 1,
+                action="APPROVED",
+                acted_at=base + acted_offsets[i],
+                comment="",
+            )
+        )
+
+    db.commit()
+    db.refresh(doc)
+    _generate_final_pdf(db, doc)
+    print(f"[seed] demo completed PDF sample → doc_id={doc.id} (결재자 {len(demo_users)}명)")
+    return doc.id
+
+
+async def _save_message_attachments(db: Session, message_id: int, uploader_id: int, form) -> int:
+    upload_files = form.getlist("files") if hasattr(form, "getlist") else []
+    if not upload_files:
+        return 0
+    upload_dir = os.path.join(DATA_DIR, "uploads", "messages", str(message_id))
+    os.makedirs(upload_dir, exist_ok=True)
+    saved = 0
+    for file in upload_files:
+        if not isinstance(file, UploadFile) or not file.filename:
+            continue
+        fname = f"{uuid.uuid4().hex}_{file.filename}"
+        fpath = os.path.join(upload_dir, fname)
+        content = await file.read()
+        with open(fpath, "wb") as out:
+            out.write(content)
+        db.add(MessageAttachment(
+            message_id=message_id,
+            uploader_id=uploader_id,
+            filename=file.filename,
+            filepath=fpath,
+            filesize=len(content),
+        ))
+        saved += 1
+    return saved
+
+
+def _can_view_message(user: User, msg: Message) -> bool:
+    return msg.sender_id == user.id or msg.receiver_id == user.id
 
 
 def _guess_media_type(path: str) -> str:
@@ -742,6 +1562,11 @@ def app_startup():
             db.add(admin)
             db.commit()
             print("[startup] created default admin user")
+        if os.getenv("SEED_DEMO_PDF", "1").strip().lower() not in ("0", "false", "no"):
+            try:
+                seed_demo_completed_pdf_sample(db)
+            except Exception as e:
+                print(f"[startup] seed_demo_completed_pdf_sample error: {e}")
     except Exception as e:
         print(f"[startup] admin creation error: {e}")
     finally:
@@ -756,9 +1581,59 @@ def logout():
     return resp
 
 
+@app.get("/api/regions")
+def api_regions_list(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    rows = db.query(Region).order_by(Region.name.asc()).all()
+    return {"regions": [{"id": r.id, "name": r.name} for r in rows]}
+
+
+@app.post("/api/regions")
+async def api_regions_create(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    name = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            name = str(body.get("name") or "").strip()
+    except Exception:
+        pass
+    if not name:
+        form = await request.form()
+        name = str(form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "지역명을 입력하세요.")
+    if len(name) > 50:
+        raise HTTPException(400, "지역명은 50자 이하여야 합니다.")
+    existing = db.query(Region).filter(Region.name == name).first()
+    if existing:
+        return {"id": existing.id, "name": existing.name}
+    reg = Region(name=name)
+    db.add(reg)
+    try:
+        db.commit()
+        db.refresh(reg)
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(Region).filter(Region.name == name).first()
+        if existing:
+            return {"id": existing.id, "name": existing.name}
+        raise HTTPException(409, "이미 등록된 지역입니다.")
+    return {"id": reg.id, "name": reg.name}
+
+
 @app.get("/doc/new", response_class=HTMLResponse)
-def doc_new_get(request: Request, user: User = Depends(get_current_user)):
-    return templates.TemplateResponse("doc_new.html", {"request": request, "user": user})
+def doc_new_get(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    try:
+        regions = db.query(Region).order_by(Region.name.asc()).all()
+    except Exception as e:
+        print(f"[doc_new] regions query failed: {e}")
+        regions = []
+    regions_json = json.dumps(
+        [{"id": r.id, "name": r.name} for r in regions], ensure_ascii=False
+    )
+    return templates.TemplateResponse(
+        "doc_new.html",
+        {"request": request, "user": user, "regions": regions, "regions_json": regions_json},
+    )
 
 
 @app.post("/doc/new")
@@ -787,6 +1662,13 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
     trip_date = str(form.get("trip_date") or "")
     destination = str(form.get("destination") or "")
     purpose = str(form.get("purpose") or "")
+    trip_region_id: Optional[int] = None
+    raw_region_id = form.get("region_id")
+    if raw_region_id not in (None, ""):
+        try:
+            trip_region_id = int(raw_region_id)
+        except (TypeError, ValueError):
+            trip_region_id = None
 
     if doc_type == "LEAVE" and not title:
         title = f"[휴가] {leave_kind} {leave_start}~{leave_end}".strip() or "[휴가] 신청"
@@ -801,7 +1683,12 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
     elif doc_type == "WORK_LOG" and not title:
         title = f"[업무일지] {work_date}".strip() or "[업무일지]"
     elif doc_type == "TRIP_REPORT" and not title:
-        title = f"[출장복명서] {destination} {trip_date}".strip() or "[출장복명서]"
+        region_label = ""
+        if trip_region_id:
+            reg = db.query(Region).filter(Region.id == trip_region_id).first()
+            if reg:
+                region_label = reg.name
+        title = f"[출장복명서] {region_label} {destination} {trip_date}".strip() or "[출장복명서]"
 
     d = Document(
         title=title or "(제목 없음)",
@@ -886,6 +1773,8 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
 
     # ── 출장복명서 (TRIP_REPORT) 행 + 사업자등록증 파일 저장 ──
     if doc_type == "TRIP_REPORT":
+        if trip_region_id and not db.query(Region).filter(Region.id == trip_region_id).first():
+            trip_region_id = None
         reg_file = form.get("registration_file")
         reg_path = None
         if isinstance(reg_file, UploadFile) and reg_file.filename:
@@ -900,6 +1789,7 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
         tr = TripReport(
             doc_id=d.id, user_id=user.id,
             trip_date=trip_date, destination=destination,
+            region_id=trip_region_id,
             purpose=purpose, registration_file_path=reg_path,
         )
         db.add(tr)
@@ -1034,6 +1924,8 @@ def doc_pdf(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get
         raise HTTPException(404, "문서를 찾을 수 없습니다.")
     if not can_view_doc(user, doc, db):
         raise HTTPException(403, "열람 권한이 없습니다.")
+    if is_doc_final(str(doc.status)):
+        _generate_final_pdf(db, doc)
     final_path = os.path.join(DATA_DIR, 'final', f"final_{doc.id}.pdf")
     if not os.path.isfile(final_path):
         raise HTTPException(404, "PDF 파일이 존재하지 않습니다. 결재 완료 후 이용 가능합니다.")
@@ -1069,27 +1961,34 @@ def preview_original(doc_id: int, db: Session = Depends(get_db), user: User = De
     )
 
 
+_EVENT_KO = {
+    "SUBMIT": "상신",
+    "APPROVED": "승인",
+    "REJECTED": "반려",
+    "CREATE": "작성",
+}
+
+
 def _history_pdf_bytes(db: Session, doc: Document) -> bytes:
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, h - 50, f"Approval history — doc #{doc.id}")
-    c.setFont("Helvetica", 10)
-    y = h - 80
+    events = []
     logs = db.query(EventLog).filter(EventLog.doc_id == doc.id).order_by(EventLog.created_at.asc()).all()
     for ev in logs:
         u = db.get(User, ev.user_id)
-        line = f"{ev.created_at}  {ev.event}  {(u.name if u else '')}  {ev.note or ''}"
-        if y < 60:
-            c.showPage()
-            y = h - 60
-        c.drawString(40, y, line[:100])
-        y -= 14
-    if not logs:
-        c.drawString(40, y, "(no events)")
-    c.save()
-    return buf.getvalue()
+        ev_code = ev.event or ""
+        events.append({
+            "at": _fmt_acted_at_pdf(ev.created_at) if ev.created_at else "",
+            "event": _EVENT_KO.get(ev_code, ev_code),
+            "user_name": (u.name if u else ""),
+            "note": ev.note or "",
+        })
+    return _render_pdf_html(
+        "pdf/history.html",
+        {
+            "doc": doc,
+            "approvers": _fetch_approved_approvers_for_pdf(db, doc.id),
+            "events": events,
+        },
+    )
 
 
 @app.get("/preview/history/{doc_id}")
@@ -1097,7 +1996,7 @@ def preview_history(doc_id: int, db: Session = Depends(get_db), user: User = Dep
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc or not can_view_doc(user, doc, db):
         raise HTTPException(403, "권한이 없습니다.")
-    if str(doc.status) != "APPROVED":
+    if not is_doc_final(str(doc.status)):
         raise HTTPException(400, "완료된 문서만 조회할 수 있습니다.")
     data = _history_pdf_bytes(db, doc)
     return Response(content=data, media_type="application/pdf", headers={"Content-Disposition": "inline; filename=history.pdf"})
@@ -1108,7 +2007,7 @@ def file_history(doc_id: int, db: Session = Depends(get_db), user: User = Depend
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc or not can_view_doc(user, doc, db):
         raise HTTPException(403, "권한이 없습니다.")
-    if str(doc.status) != "APPROVED":
+    if not is_doc_final(str(doc.status)):
         raise HTTPException(400, "완료된 문서만 다운로드할 수 있습니다.")
     data = _history_pdf_bytes(db, doc)
     return Response(
@@ -1157,8 +2056,8 @@ def _perform_single_approve(db: Session, user: User, doc: Document) -> Tuple[boo
             _notify(db, nxt.approver_id, f"[결재요청] 「{doc.title}」 결재 차례입니다", f"/doc/{doc.id}")
     update_doc_status_after_action(db, doc)
     db.refresh(doc)
-    if str(doc.status) == "APPROVED":
-        _generate_final_pdf(doc)
+    if is_doc_final(str(doc.status)):
+        _generate_final_pdf(db, doc)
         _notify(db, doc.creator_id, f"[승인완료] 「{doc.title}」이(가) 최종 승인되었습니다", f"/doc/{doc.id}")
     else:
         _notify(db, doc.creator_id, f"[승인] {user.name}님이 「{doc.title}」을(를) 승인했습니다", f"/doc/{doc.id}")
@@ -1206,10 +2105,28 @@ def doc_view(request: Request, doc_id: int, db: Session = Depends(get_db), user:
 
     worklog = None
     trip_report = None
+    trip_credit_total = 0
+    trip_cash_total = 0
     if str(doc.doc_type) == "WORK_LOG":
-        worklog = db.query(WorkLog).filter(WorkLog.doc_id == doc.id).first()
+        worklog = (
+            db.query(WorkLog)
+            .options(selectinload(WorkLog.lines))
+            .filter(WorkLog.doc_id == doc.id)
+            .first()
+        )
     elif str(doc.doc_type) == "TRIP_REPORT":
-        trip_report = db.query(TripReport).filter(TripReport.doc_id == doc.id).first()
+        trip_report = (
+            db.query(TripReport)
+            .options(
+                joinedload(TripReport.region),
+                selectinload(TripReport.lines),
+            )
+            .filter(TripReport.doc_id == doc.id)
+            .first()
+        )
+        if trip_report and trip_report.lines:
+            trip_credit_total = sum(int(ln.credit_amount or 0) for ln in trip_report.lines)
+            trip_cash_total = sum(int(ln.cash_amount or 0) for ln in trip_report.lines)
 
     return templates.TemplateResponse(
         "doc.html",
@@ -1217,6 +2134,8 @@ def doc_view(request: Request, doc_id: int, db: Session = Depends(get_db), user:
             "request": request, "user": user, "doc": doc,
             "submitter": submitter, "approvers": approvers, "can_act": can_act,
             "worklog": worklog, "trip_report": trip_report,
+            "trip_credit_total": trip_credit_total,
+            "trip_cash_total": trip_cash_total,
         },
     )
 
@@ -1358,23 +2277,285 @@ def board_new_post(
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_index(request: Request, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    grades = db.query(Grade).order_by(Grade.id).all()
-    users = db.query(User).order_by(User.id).all()
-    return templates.TemplateResponse("admin.html", {"request": request, "grades": grades, "users": users})
+def admin_index(_: User = Depends(require_admin)):
+    return RedirectResponse(url="/admin/users", status_code=303)
 
 
 @app.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    grades = db.query(Grade).order_by(Grade.id).all()
+    grades = db.query(Grade).filter(Grade.is_active == True).order_by(Grade.name).all()
     users = db.query(User).order_by(User.id).all()
-    return templates.TemplateResponse("admin_users.html", {"request": request, "user": user, "grades": grades, "users": users})
+    flash = request.query_params.get("flash", "")
+    return templates.TemplateResponse(
+        "admin_users.html",
+        {"request": request, "user": user, "grades": grades, "users": users, "flash": flash},
+    )
+
+
+@app.post("/admin/users/add")
+async def admin_users_add(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    form = await request.form()
+    username = str(form.get("username") or "").strip()
+    name = str(form.get("name") or "").strip()
+    dept = str(form.get("dept") or "").strip()
+    temp_pw = str(form.get("temp_pw") or ADMIN_DEFAULT_PW).strip() or ADMIN_DEFAULT_PW
+    grade_name = _resolve_user_grade(db, str(form.get("grade_id") or ""), str(form.get("grade") or ""))
+    is_admin = _is_truthy_admin(form.get("is_admin"))
+
+    if not username or not name:
+        return _admin_redirect_users("아이디와 이름은 필수입니다.")
+    if db.query(User).filter(User.username == username).first():
+        return _admin_redirect_users(f"이미 존재하는 아이디입니다: {username}")
+
+    u = User(
+        username=username,
+        name=name,
+        dept=dept,
+        grade=grade_name,
+        is_admin=is_admin,
+        is_active=True,
+        password_hash=hash_pw(temp_pw),
+        must_change_pw=True,
+    )
+    db.add(u)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _admin_redirect_users("사용자 등록에 실패했습니다.")
+    return _admin_redirect_users(f"사용자 '{username}' 을(를) 등록했습니다.")
+
+
+@app.post("/admin/users/import_csv")
+async def admin_users_import_csv(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+    file: UploadFile = File(...),
+):
+    raw = await file.read()
+    if not raw:
+        return _admin_redirect_users("CSV 파일이 비어 있습니다.")
+
+    for enc in ("utf-8-sig", "utf-8", "cp949"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            text = None
+    if text is None:
+        return _admin_redirect_users("CSV 인코딩을 읽을 수 없습니다. UTF-8로 저장해 주세요.")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        return _admin_redirect_users("CSV 헤더가 없습니다.")
+
+    norm = {(h or "").strip().lower(): h for h in reader.fieldnames}
+    need = ["username", "name"]
+    for col in need:
+        if col not in norm:
+            return _admin_redirect_users(f"CSV에 '{col}' 컬럼이 필요합니다.")
+
+    created = skipped = 0
+    for row in reader:
+        username = str(row.get(norm["username"]) or "").strip()
+        name = str(row.get(norm["name"]) or "").strip()
+        if not username or not name:
+            continue
+        if db.query(User).filter(User.username == username).first():
+            skipped += 1
+            continue
+        dept = str(row.get(norm.get("dept", ""), "") or "").strip() if "dept" in norm else ""
+        grade_cell = str(row.get(norm.get("grade", ""), "") or "").strip() if "grade" in norm else ""
+        grade_name = _lookup_grade_name(db, grade_cell)
+        is_admin = False
+        if "is_admin" in norm:
+            is_admin = _is_truthy_admin(row.get(norm["is_admin"]))
+
+        db.add(
+            User(
+                username=username,
+                name=name,
+                dept=dept,
+                grade=grade_name,
+                is_admin=is_admin,
+                is_active=True,
+                password_hash=hash_pw(ADMIN_DEFAULT_PW),
+                must_change_pw=True,
+            )
+        )
+        created += 1
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _admin_redirect_users("CSV 등록 중 오류가 발생했습니다.")
+
+    return _admin_redirect_users(f"CSV 등록 완료: 신규 {created}명, 건너뜀 {skipped}명")
+
+
+@app.post("/admin/users/reset_pw")
+async def admin_users_reset_pw(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    form = await request.form()
+    try:
+        user_id = int(form.get("user_id") or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        return _admin_redirect_users("사용자를 찾을 수 없습니다.")
+    target.password_hash = hash_pw(ADMIN_DEFAULT_PW)
+    target.must_change_pw = True
+    db.commit()
+    return _admin_redirect_users(f"'{target.username}' 비밀번호를 초기화했습니다. ({ADMIN_DEFAULT_PW})")
+
+
+@app.post("/admin/users/{user_id}/delete")
+def admin_users_delete(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        return _admin_redirect_users("사용자를 찾을 수 없습니다.")
+    if target.id == admin.id:
+        return _admin_redirect_users("본인 계정은 비활성화할 수 없습니다.")
+    if target.username == ADMIN_ID:
+        return _admin_redirect_users("기본 관리자 계정은 비활성화할 수 없습니다.")
+    if target.is_admin and _count_active_admins(db, exclude_user_id=target.id) < 1:
+        return _admin_redirect_users("마지막 관리자는 비활성화할 수 없습니다.")
+
+    target.is_active = False
+    db.commit()
+    return _admin_redirect_users(f"'{target.username}' 계정을 비활성화했습니다.")
+
+
+@app.get("/admin/users/{user_id}/edit", response_class=HTMLResponse)
+def admin_user_edit_get(
+    request: Request,
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다.")
+    grades = db.query(Grade).filter(Grade.is_active == True).order_by(Grade.name).all()
+    return templates.TemplateResponse(
+        "admin_user_edit.html",
+        {"request": request, "user": user, "u": u, "grades": grades},
+    )
+
+
+@app.post("/admin/users/{user_id}/edit")
+async def admin_user_edit_post(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        return _admin_redirect_users("사용자를 찾을 수 없습니다.")
+
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        return _admin_redirect_users("이름은 필수입니다.")
+
+    new_is_admin = _is_truthy_admin(form.get("is_admin"))
+    new_is_active = str(form.get("is_active") or "1").strip() == "1"
+
+    if target.is_admin and not new_is_admin and _count_active_admins(db, exclude_user_id=target.id) < 1:
+        return _admin_redirect_users("마지막 관리자의 권한은 해제할 수 없습니다.")
+    if not new_is_active and target.id == admin.id:
+        return _admin_redirect_users("본인 계정은 비활성화할 수 없습니다.")
+    if not new_is_active and target.is_admin and _count_active_admins(db, exclude_user_id=target.id) < 1:
+        return _admin_redirect_users("마지막 관리자는 비활성화할 수 없습니다.")
+
+    target.name = name
+    target.dept = str(form.get("dept") or "").strip()
+    target.grade = _resolve_user_grade(db, str(form.get("grade_id") or ""), str(form.get("grade") or ""))
+    target.is_admin = new_is_admin
+    target.is_active = new_is_active
+    target.must_change_pw = str(form.get("must_change_pw") or "0").strip() == "1"
+
+    new_pw = str(form.get("new_pw") or "").strip()
+    if new_pw:
+        target.password_hash = hash_pw(new_pw)
+        target.must_change_pw = True
+
+    db.commit()
+    return _admin_redirect_users(f"'{target.username}' 정보를 저장했습니다.")
 
 
 @app.get("/admin/grades", response_class=HTMLResponse)
 def admin_grades(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     grades = db.query(Grade).order_by(Grade.id).all()
-    return templates.TemplateResponse("admin_grades.html", {"request": request, "user": user, "grades": grades})
+    flash = request.query_params.get("flash", "")
+    return templates.TemplateResponse(
+        "admin_grades.html",
+        {"request": request, "user": user, "grades": grades, "flash": flash},
+    )
+
+
+@app.post("/admin/grades/add")
+async def admin_grades_add(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+    name: str = Form(...),
+):
+    name = (name or "").strip()
+    if not name:
+        return _admin_redirect_grades("직급명을 입력하세요.")
+    if db.query(Grade).filter(Grade.name == name).first():
+        return _admin_redirect_grades(f"이미 있는 직급입니다: {name}")
+    db.add(Grade(name=name, is_active=True))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _admin_redirect_grades("직급 등록에 실패했습니다.")
+    return _admin_redirect_grades(f"직급 '{name}' 을(를) 등록했습니다.")
+
+
+@app.post("/admin/grades/{grade_id}/delete")
+def admin_grades_delete(
+    grade_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    g = db.query(Grade).filter(Grade.id == grade_id).first()
+    if not g:
+        return _admin_redirect_grades("직급을 찾을 수 없습니다.")
+    g.is_active = False
+    for u in db.query(User).filter(User.grade == g.name).all():
+        u.grade = ""
+    db.commit()
+    return _admin_redirect_grades(f"직급 '{g.name}' 을(를) 비활성화했습니다.")
+
+
+@app.post("/admin/grades/{grade_id}/restore")
+def admin_grades_restore(
+    grade_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    g = db.query(Grade).filter(Grade.id == grade_id).first()
+    if not g:
+        return _admin_redirect_grades("직급을 찾을 수 없습니다.")
+    g.is_active = True
+    db.commit()
+    return _admin_redirect_grades(f"직급 '{g.name}' 을(를) 복구했습니다.")
 
 
 @app.get("/my_profile", response_class=HTMLResponse)
@@ -1384,8 +2565,21 @@ def my_profile(request: Request, user: User = Depends(get_current_user)):
 
 @app.get("/messages", response_class=HTMLResponse)
 def messages_list(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    inbox = db.query(Message).filter(Message.receiver_id == user.id).order_by(Message.created_at.desc()).all()
-    outbox = db.query(Message).filter(Message.sender_id == user.id).order_by(Message.created_at.desc()).all()
+    load_opts = joinedload(Message.sender), joinedload(Message.receiver), joinedload(Message.attachments)
+    inbox = (
+        db.query(Message)
+        .options(*load_opts)
+        .filter(Message.receiver_id == user.id)
+        .order_by(Message.created_at.desc())
+        .all()
+    )
+    outbox = (
+        db.query(Message)
+        .options(*load_opts)
+        .filter(Message.sender_id == user.id)
+        .order_by(Message.created_at.desc())
+        .all()
+    )
     users = db.query(User).filter(User.is_active == True, User.id != user.id).order_by(User.name).all()
     return templates.TemplateResponse("messages.html", {
         "request": request, "user": user,
@@ -1394,31 +2588,63 @@ def messages_list(request: Request, db: Session = Depends(get_db), user: User = 
 
 
 @app.post("/messages/new")
-def messages_new(
+async def messages_new(
     request: Request,
-    receiver_id: int = Form(0),
-    content: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    if not content.strip() or not receiver_id:
+    form = await request.form()
+    try:
+        receiver_id = int(form.get("receiver_id") or 0)
+    except (TypeError, ValueError):
+        receiver_id = 0
+    content = str(form.get("content") or "").strip()
+    if not receiver_id:
         return RedirectResponse(url="/messages", status_code=303)
     receiver = db.query(User).get(receiver_id)
     if not receiver:
         return RedirectResponse(url="/messages", status_code=303)
-    msg = Message(sender_id=user.id, receiver_id=receiver_id, content=content.strip())
+    upload_files = form.getlist("files") if hasattr(form, "getlist") else []
+    has_files = any(isinstance(f, UploadFile) and f.filename for f in upload_files)
+    if not content and not has_files:
+        return RedirectResponse(url="/messages", status_code=303)
+    msg = Message(sender_id=user.id, receiver_id=receiver_id, content=content or "(첨부파일)")
     db.add(msg)
-    _notify(db, receiver_id, f"[쪽지] {user.name}님이 쪽지를 보냈습니다", "/messages")
+    db.flush()
+    await _save_message_attachments(db, msg.id, user.id, form)
+    _notify(db, receiver_id, f"[쪽지] {user.name}님이 쪽지를 보냈습니다", f"/messages/{msg.id}")
     db.commit()
     return RedirectResponse(url="/messages", status_code=303)
 
 
+def _render_message_view(request: Request, msg_id: int, db: Session, user: User):
+    m = (
+        db.query(Message)
+        .options(
+            joinedload(Message.sender),
+            joinedload(Message.receiver),
+            joinedload(Message.attachments),
+        )
+        .filter(Message.id == msg_id)
+        .first()
+    )
+    if not m or not _can_view_message(user, m):
+        raise HTTPException(404, "메시지를 찾을 수 없습니다.")
+    if m.receiver_id == user.id and not m.read_at:
+        m.read_at = now()
+        db.commit()
+        db.refresh(m)
+    return templates.TemplateResponse("message_view.html", {"request": request, "user": user, "msg": m})
+
+
+@app.get("/messages/{msg_id}", response_class=HTMLResponse)
+def messages_view(request: Request, msg_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _render_message_view(request, msg_id, db, user)
+
+
 @app.get("/message/{msg_id}", response_class=HTMLResponse)
 def message_view(request: Request, msg_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    m = db.query(Message).get(msg_id)
-    if not m or m.receiver_id != user.id:
-        raise HTTPException(404, "메시지를 찾을 수 없습니다.")
-    return templates.TemplateResponse("message_view.html", {"request": request, "user": user, "message": m})
+    return _render_message_view(request, msg_id, db, user)
 
 
 @app.get("/notifications", response_class=HTMLResponse)
@@ -1681,7 +2907,7 @@ def completed(request: Request, db: Session = Depends(get_db), user: User = Depe
     submitter = request.query_params.get("submitter", "").strip()
     start = request.query_params.get("start", "").strip()
     end = request.query_params.get("end", "").strip()
-    docs_query = db.query(Document).filter(Document.status == "APPROVED")
+    docs_query = db.query(Document).filter(Document.status.in_(DOC_FINAL_STATUSES))
     # 개별 필드 검색 우선 적용
     if doc_no:
         docs_query = docs_query.filter(Document.doc_no.contains(doc_no))
@@ -1720,6 +2946,163 @@ def completed(request: Request, db: Session = Depends(get_db), user: User = Depe
         d.final_path = fp if os.path.isfile(fp) else None
 
     return templates.TemplateResponse("completed.html", {"request": request, "user": user, "docs": docs, "doc_no": doc_no, "title": title_q, "submitter": submitter, "start": start, "end": end})
+
+
+@app.get("/accounting/dashboard", response_class=HTMLResponse)
+def accounting_dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    mode, date_from, date_to, ref = _parse_accounting_period(request)
+    try:
+        total_billing = _sum_trip_billing(db, date_from, date_to)
+        total_collection = _sum_collections(db, date_from, date_to)
+        receivable_balance = _cumulative_receivable(db, date_to)
+        flow_rows = _accounting_flow_rows(db, mode, date_from, date_to)
+    except Exception as e:
+        print(f"[accounting/dashboard] aggregate failed: {e}")
+        import traceback
+        traceback.print_exc()
+        total_billing = total_collection = 0
+        receivable_balance = 0
+        flow_rows = []
+    period_label = _accounting_period_label(mode, ref, date_from, date_to)
+    today = datetime.now()
+    flow_headers = {
+        "day": ("일자", "당일 요약"),
+        "month": ("일자", "일별 자금 흐름"),
+        "quarter": ("월", "월별 자금 흐름"),
+        "year": ("월", "월별 자금 흐름"),
+    }
+    bucket_header, flow_title = flow_headers.get(mode, ("기간", "자금 흐름"))
+    q_year = today.year
+    q_num = (today.month - 1) // 3 + 1
+    if mode == "quarter" and "-Q" in ref:
+        try:
+            q_year = int(ref.split("-Q")[0])
+            q_num = int(ref.split("-Q")[1])
+        except (ValueError, IndexError):
+            pass
+    return templates.TemplateResponse(
+        "accounting_dashboard.html",
+        {
+            "request": request,
+            "user": user,
+            "mode": mode,
+            "ref": ref,
+            "date_from": date_from,
+            "date_to": date_to,
+            "period_label": period_label,
+            "total_billing": total_billing,
+            "total_collection": total_collection,
+            "period_net": total_billing - total_collection,
+            "receivable_balance": receivable_balance,
+            "flow_rows": flow_rows,
+            "bucket_header": bucket_header,
+            "flow_title": flow_title,
+            "filter_year": request.query_params.get("year") or str(q_year),
+            "filter_quarter": request.query_params.get("quarter") or str(q_num),
+        },
+    )
+
+
+@app.get("/accounting/ledger", response_class=HTMLResponse)
+def accounting_ledger(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    month_ref, month_start, month_end = _parse_ledger_month(request)
+    region_id_raw = request.query_params.get("region_id", "").strip()
+    company_q = request.query_params.get("company", "").strip()
+    region_id: Optional[int] = None
+    if region_id_raw:
+        try:
+            region_id = int(region_id_raw)
+        except (ValueError, TypeError):
+            region_id = None
+    try:
+        regions = db.query(Region).order_by(Region.name.asc()).all()
+    except Exception as e:
+        print(f"[ledger] regions query failed: {e}")
+        regions = []
+    try:
+        ledger_rows = _build_ledger_rows(
+            db, month_start, month_end, region_id=region_id, company_q=company_q
+        )
+    except Exception as e:
+        print(f"[ledger] _build_ledger_rows failed: {e}")
+        import traceback
+        traceback.print_exc()
+        ledger_rows = []
+    totals = {
+        "opening": sum(r["opening"] for r in ledger_rows),
+        "billing_current": sum(r["billing_current"] for r in ledger_rows),
+        "collection_current": sum(r["collection_current"] for r in ledger_rows),
+        "balance": sum(r["balance"] for r in ledger_rows),
+    }
+    return templates.TemplateResponse(
+        "accounting_ledger.html",
+        {
+            "request": request,
+            "user": user,
+            "month_ref": month_ref,
+            "region_id": region_id_raw,
+            "company_q": company_q,
+            "regions": regions,
+            "ledger_rows": ledger_rows,
+            "totals": totals,
+        },
+    )
+
+
+@app.post("/api/collections")
+async def api_collections_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    payload: dict = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        form = await request.form()
+        payload = dict(form)
+    company_name = str(payload.get("company_name") or "").strip()
+    region_name = str(payload.get("region_name") or "").strip()
+    collection_date = str(payload.get("collection_date") or "").strip()[:10]
+    note = str(payload.get("note") or "").strip()
+    try:
+        amount = int(str(payload.get("amount") or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        amount = 0
+    if not company_name or not region_name:
+        raise HTTPException(400, "업체명과 지역을 입력하세요.")
+    if not collection_date:
+        raise HTTPException(400, "수금일을 입력하세요.")
+    if amount <= 0:
+        raise HTTPException(400, "수금액을 입력하세요.")
+    if not db.query(Region).filter(Region.name == region_name).first():
+        raise HTTPException(400, "등록되지 않은 지역입니다. 지역 마스터에 먼저 등록하세요.")
+    row = Collection(
+        company_name=company_name,
+        region_name=region_name,
+        amount=amount,
+        collection_date=collection_date,
+        note=note,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "ok": True,
+        "id": row.id,
+        "company_name": row.company_name,
+        "region_name": row.region_name,
+        "amount": row.amount,
+        "collection_date": row.collection_date,
+    }
 
 
 @app.get("/calendar", response_class=HTMLResponse)
@@ -2001,6 +3384,23 @@ def download_attachment(attachment_id: int, db: Session = Depends(get_db), user:
     if not os.path.isfile(att.filepath):
         raise HTTPException(404, "파일이 존재하지 않습니다.")
     return FileResponse(att.filepath, filename=att.filename, media_type="application/octet-stream")
+
+
+@app.get("/file/message_attachment/{attachment_id}")
+def download_message_attachment(attachment_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    att = db.query(MessageAttachment).get(attachment_id)
+    if not att:
+        raise HTTPException(404, "첨부파일을 찾을 수 없습니다.")
+    msg = db.query(Message).get(att.message_id)
+    if not msg or not _can_view_message(user, msg):
+        raise HTTPException(403, "권한이 없습니다.")
+    if not os.path.isfile(att.filepath):
+        raise HTTPException(404, "파일이 존재하지 않습니다.")
+    return FileResponse(
+        att.filepath,
+        filename=att.filename,
+        media_type=_guess_media_type(att.filepath),
+    )
 
 
 @app.get("/file/trip_registration/{trip_report_id}")

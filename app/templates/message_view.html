@@ -30,6 +30,30 @@
   <div style="min-height: 200px; white-space: pre-wrap; line-height: 1.6; color: var(--text); padding: 1rem; background: #f9fafb; border-radius: 8px; border: 1px solid var(--border);">
     {{ msg.content }}
   </div>
+
+  {% if msg.attachments %}
+  <div style="margin-top: 1.5rem;">
+    <h4 style="margin: 0 0 0.75rem 0; font-size: 1rem;">첨부파일 ({{ msg.attachments|length }})</h4>
+    <table class="table" style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--border); text-align: left;">
+          <th style="padding: 0.5rem;">파일명</th>
+          <th style="padding: 0.5rem; width: 100px;">크기</th>
+          <th style="padding: 0.5rem; width: 100px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for att in msg.attachments %}
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem;">{{ att.filename }}</td>
+          <td style="padding: 0.5rem; color: var(--muted); font-size: 0.875rem;">{{ "%.1f"|format(att.filesize / 1024) }} KB</td>
+          <td style="padding: 0.5rem;"><a class="btn ghost btn-sm" href="/file/message_attachment/{{ att.id }}" download>다운로드</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 </div>
 
 <div style="text-align: center;">

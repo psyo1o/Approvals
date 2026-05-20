@@ -7,7 +7,7 @@
       <div class="muted">내 문서 / 결재 문서 목록</div>
     </div>
     <div class="row">
-      <a class="btn" href="/doc/new">+ 새 문서</a>
+      <a class="btn primary" href="/doc/new">+ 새 문서</a>
     </div>
   </div>
 
@@ -69,7 +69,7 @@
                 <span class="badge">작성중</span>
               {% elif d.status == "SUBMITTED" or d.status == "IN_REVIEW" %}
                 <span class="badge badge-amber">결재중</span>
-              {% elif d.status == "APPROVED" %}
+              {% elif d.status == "APPROVED" or d.status == "APPROVED_FINAL" %}
                 <span class="badge badge-green">결재완료</span>
               {% elif d.status == "REJECTED" %}
                 <span class="badge badge-red">반려</span>

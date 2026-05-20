@@ -1,74 +1,79 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card">
-  <h3>사용자 수정</h3>
-  <div class="muted" style="margin-bottom:10px;">
-    <a href="/admin/users">← 사용자관리로</a>
-  </div>
+<section class="admin-page">
+  <section class="admin-breadcrumb">
+    <a href="/admin/users">사용자 관리</a>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    <span>사용자 수정</span>
+  </section>
 
-  <div class="card">
-    <form method="post" action="/admin/users/{{u.id}}/edit">
-      <div class="row">
-        <div style="flex:1; min-width:220px;">
-          <label>아이디</label>
-          <input value="{{u.username}}" disabled>
-        </div>
-        <div style="flex:1; min-width:220px;">
-          <label>이름</label>
-          <input name="name" value="{{u.name}}">
-        </div>
-        <div style="flex:1; min-width:220px;">
-          <label>부서</label>
-          <input name="dept" value="{{u.dept}}">
-        </div>
-        <div style="flex:1; min-width:220px;">
-          <label>직급</label>
+  <section class="admin-hero">
+    <section class="admin-hero-text">
+      <h2>{{ u.name or u.username }}</h2>
+      <p class="muted">@{{ u.username }} · 계정 정보 수정</p>
+    </section>
+    {% include "partials/admin_nav.html" %}
+  </section>
+
+  <section class="admin-section" style="max-width:720px;">
+    <section class="admin-section-head">
+      <span class="admin-section-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </span>
+      <section>
+        <h3>기본 정보</h3>
+        <p>이름 · 부서 · 직급 · 권한</p>
+      </section>
+    </section>
+
+    <form method="post" action="/admin/users/{{ u.id }}/edit">
+      <section class="admin-form-grid">
+        <label class="field-block">아이디
+          <input value="{{ u.username }}" disabled style="background:#f1f5f9;color:var(--muted);">
+        </label>
+        <label class="field-block">이름
+          <input name="name" value="{{ u.name }}" required>
+        </label>
+        <label class="field-block">부서
+          <input name="dept" value="{{ u.dept or '' }}" placeholder="부서명">
+        </label>
+        <label class="field-block">직급
           <select name="grade_id">
             <option value="">(선택)</option>
             {% for g in grades %}
-              <option value="{{g.id}}" {% if u.grade == g.name %}selected{% endif %}>{{g.name}}</option>
+            <option value="{{ g.id }}" {% if u.grade == g.name %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
           </select>
-          <div class="muted">목록에 없으면 직접 입력</div>
-          <input name="grade" value="{{u.grade}}">
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:8px;">
-        <div style="width:160px;">
-          <label>관리자?</label>
+          <input name="grade" value="{{ u.grade or '' }}" placeholder="직접 입력" style="margin-top:6px;">
+        </label>
+        <label class="field-block">관리자
           <select name="is_admin">
-            <option value="0" {% if not u.is_admin %}selected{% endif %}>아니오</option>
-            <option value="1" {% if u.is_admin %}selected{% endif %}>예</option>
+            <option value="0" {% if not u.is_admin %}selected{% endif %}>일반</option>
+            <option value="1" {% if u.is_admin %}selected{% endif %}>관리자</option>
           </select>
-        </div>
-        <div style="width:160px;">
-          <label>활성?</label>
+        </label>
+        <label class="field-block">계정 활성
           <select name="is_active">
-            <option value="1" {% if u.is_active %}selected{% endif %}>예</option>
-            <option value="0" {% if not u.is_active %}selected{% endif %}>아니오</option>
+            <option value="1" {% if u.is_active %}selected{% endif %}>활성</option>
+            <option value="0" {% if not u.is_active %}selected{% endif %}>비활성</option>
           </select>
-        </div>
-        <div style="width:200px;">
-          <label>초기변경 강제?</label>
+        </label>
+        <label class="field-block">PW 변경 강제
           <select name="must_change_pw">
             <option value="0" {% if not u.must_change_pw %}selected{% endif %}>아니오</option>
             <option value="1" {% if u.must_change_pw %}selected{% endif %}>예</option>
           </select>
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:8px;">
-        <div style="flex:1; min-width:260px;">
-          <label>새 비밀번호 (비우면 변경 안함)</label>
-          <input name="new_pw" placeholder="입력 시 비번 변경 + 최초변경 강제">
-        </div>
-      </div>
-
-      <div style="margin-top:12px;">
-        <button class="btn" type="submit">저장</button>
-      </div>
+        </label>
+        <label class="field-block span-2">새 비밀번호
+          <input type="password" name="new_pw" placeholder="입력 시 변경">
+          <small class="muted">비우면 비밀번호는 변경하지 않습니다.</small>
+        </label>
+      </section>
+      <footer class="admin-form-actions">
+        <button class="btn primary" type="submit">저장</button>
+        <a class="btn ghost" href="/admin/users">취소</a>
+      </footer>
     </form>
-  </div>
-</div>
+  </section>
+</section>
 {% endblock %}

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .acct-filter {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+    margin-bottom: 20px; padding: 14px; background: #f8fafc;
+    border-radius: 10px; border: 1px solid var(--border);
+  }
+  .acct-filter label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #374151; }
+  .acct-filter .field { min-width: 130px; }
+  .mode-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mode-tabs label {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fff; cursor: pointer; font-size: 14px; font-weight: 500;
+  }
+  .mode-tabs input { display: none; }
+  .mode-tabs input:checked + span { color: var(--primary); font-weight: 700; }
+  .mode-tabs label:has(input:checked) { border-color: var(--primary); background: #eff6ff; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat-card { padding: 16px 18px; border-radius: 12px; border: 1px solid var(--border); background: #fff; }
+  .stat-card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .stat-card .value { font-size: 26px; font-weight: 700; }
+  .stat-card.billing .value { color: #1d4ed8; }
+  .stat-card.collection .value { color: #059669; }
+  .stat-card.receivable.positive .value { color: #b45309; }
+  .stat-card.receivable.negative .value { color: #059669; }
+  .stat-card.receivable.zero .value { color: #6b7280; }
+  .flow-bar-wrap { margin: 8px 0 20px; height: 12px; border-radius: 999px; background: #e5e7eb; overflow: hidden; display: flex; }
+  .flow-bar-wrap .billing-part { background: #3b82f6; height: 100%; }
+  .flow-bar-wrap .collection-part { background: #10b981; height: 100%; }
+  .flow-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .flow-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .flow-legend .lg-bill::before { background: #3b82f6; }
+  .flow-legend .lg-coll::before { background: #10b981; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hint-box { font-size: 13px; color: var(--muted); margin-bottom: 16px; padding: 10px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; }
+  .page-links { display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+    <div>
+      <h2 style="margin:0;">일월계표</h2>
+      <p class="muted" style="margin:4px 0 0 0;">출장복명서 청구액(최종 승인) vs 수금액 비교</p>
+    </div>
+    <div class="page-links">
+      <a class="btn ghost" href="/accounting/ledger">미수금대장 →</a>
+    </div>
+  </div>
+
+  <form method="get" action="/accounting/dashboard" class="acct-filter" id="acctFilterForm">
+    <div class="field">
+      <label>조회 단위</label>
+      <div class="mode-tabs">
+        <label><input type="radio" name="mode" value="day" {% if mode == "day" %}checked{% endif %} onchange="togglePeriodInputs()"><span>일별</span></label>
+        <label><input type="radio" name="mode" value="month" {% if mode == "month" %}checked{% endif %} onchange="togglePeriodInputs()"><span>월별</span></label>
+        <label><input type="radio" name="mode" value="quarter" {% if mode == "quarter" %}checked{% endif %} onchange="togglePeriodInputs()"><span>분기</span></label>
+        <label><input type="radio" name="mode" value="year" {% if mode == "year" %}checked{% endif %} onchange="togglePeriodInputs()"><span>연별</span></label>
+      </div>
+    </div>
+    <div class="field" id="field_day" style="{% if mode != 'day' %}display:none{% endif %}">
+      <label for="filter_date">기준일</label>
+      <input type="date" id="filter_date" value="{{ ref if mode == 'day' else '' }}">
+    </div>
+    <div class="field" id="field_month" style="{% if mode != 'month' %}display:none{% endif %}">
+      <label for="filter_month">기준월</label>
+      <input type="month" id="filter_month" value="{{ ref if mode == 'month' else '' }}">
+    </div>
+    <div class="field" id="field_quarter" style="{% if mode != 'quarter' %}display:none{% endif %}">
+      <label>기준 분기</label>
+      <div style="display:flex;gap:6px;">
+        <input type="number" id="filter_year_q" min="2000" max="2100" value="{{ filter_year }}" style="width:90px;" placeholder="연도">
+        <select id="filter_quarter" style="width:90px;">
+          <option value="1" {% if filter_quarter == '1' %}selected{% endif %}>1분기</option>
+          <option value="2" {% if filter_quarter == '2' %}selected{% endif %}>2분기</option>
+          <option value="3" {% if filter_quarter == '3' %}selected{% endif %}>3분기</option>
+          <option value="4" {% if filter_quarter == '4' %}selected{% endif %}>4분기</option>
+        </select>
+      </div>
+    </div>
+    <div class="field" id="field_year" style="{% if mode != 'year' %}display:none{% endif %}">
+      <label for="filter_year">기준연도</label>
+      <input type="number" id="filter_year" min="2000" max="2100" value="{{ ref if mode == 'year' else filter_year }}">
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button type="submit" class="btn primary">조회</button>
+    </div>
+  </form>
+
+  <p class="hint-box">
+    조회 기간: <b>{{ period_label }}</b><br>
+    <b>기간 청구·수금</b>은 위 구간 합계이고, <b>미수 잔액</b>은 <b>{{ date_to }}</b>까지 누적(전체 청구 − 전체 수금)입니다. 받을 돈이 빠지지 않도록 이월분을 모두 포함합니다.
+  </p>
+
+  <div class="stat-grid">
+    <div class="stat-card billing">
+      <div class="label">기간 청구액</div>
+      <div class="value">{{ "{:,}".format(total_billing) }}<span style="font-size:14px;font-weight:500;"> 원</span></div>
+    </div>
+    <div class="stat-card collection">
+      <div class="label">기간 수금액</div>
+      <div class="value">{{ "{:,}".format(total_collection) }}<span style="font-size:14px;font-weight:500;"> 원</span></div>
+    </div>
+    <div class="stat-card receivable {% if receivable_balance > 0 %}positive{% elif receivable_balance < 0 %}negative{% else %}zero{% endif %}">
+      <div class="label">미수 잔액 (누적)</div>
+      <div class="value">{{ "{:,}".format(receivable_balance) }}<span style="font-size:14px;font-weight:500;"> 원</span></div>
+      <div class="muted" style="font-size:12px;margin-top:4px;">
+        {{ date_to }} 기준 · 기간 내 증감 {{ "{:,}".format(period_net) }}원
+      </div>
+    </div>
+  </div>
+
+  {% set bar_total = total_billing + total_collection %}
+  {% if bar_total > 0 %}
+  <div class="flow-legend">
+    <span class="lg-bill">청구 {{ "{:,}".format(total_billing) }}원</span>
+    <span class="lg-coll">수금 {{ "{:,}".format(total_collection) }}원</span>
+  </div>
+  <div class="flow-bar-wrap">
+    <div class="billing-part" style="width:{{ (total_billing * 100 / bar_total)|round(1) }}%;"></div>
+    <div class="collection-part" style="width:{{ (total_collection * 100 / bar_total)|round(1) }}%;"></div>
+  </div>
+  {% endif %}
+
+  {% if mode == "day" %}
+  <h3 style="margin:0 0 10px 0; font-size:16px;">{{ flow_title }}</h3>
+  <table class="table">
+    <thead><tr><th>{{ bucket_header }}</th><th class="num">청구액</th><th class="num">수금액</th><th class="num">누적 미수</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>{{ ref }}</td>
+        <td class="num">{{ "{:,}".format(total_billing) }}</td>
+        <td class="num">{{ "{:,}".format(total_collection) }}</td>
+        <td class="num">{{ "{:,}".format(receivable_balance) }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% elif flow_rows|length > 0 %}
+  <h3 style="margin:0 0 10px 0; font-size:16px;">{{ flow_title }}</h3>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr><th>{{ bucket_header }}</th><th class="num">청구액</th><th class="num">수금액</th><th class="num">누적 미수</th></tr>
+      </thead>
+      <tbody>
+        {% for row in flow_rows %}
+        <tr>
+          <td>{{ row.bucket }}</td>
+          <td class="num">{{ "{:,}".format(row.billing) }}</td>
+          <td class="num">{{ "{:,}".format(row.collection) }}</td>
+          <td class="num" style="{% if row.receivable > 0 %}color:#b45309{% elif row.receivable < 0 %}color:#059669{% endif %}">{{ "{:,}".format(row.receivable) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr style="font-weight:bold;background:#f9fafb;">
+          <td>합계</td>
+          <td class="num">{{ "{:,}".format(total_billing) }}</td>
+          <td class="num">{{ "{:,}".format(total_collection) }}</td>
+          <td class="num">{{ "{:,}".format(receivable_balance) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">해당 기간에 집계할 데이터가 없습니다.</p>
+  {% endif %}
+</div>
+
+<script>
+function togglePeriodInputs() {
+  const mode = document.querySelector('input[name="mode"]:checked')?.value || 'month';
+  ['field_day','field_month','field_quarter','field_year'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const show = { day: 'field_day', month: 'field_month', quarter: 'field_quarter', year: 'field_year' }[mode];
+  if (show) document.getElementById(show).style.display = 'block';
+}
+function clearPeriodNames() {
+  ['filter_date','filter_month','filter_year','filter_year_q','filter_quarter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.removeAttribute('name');
+  });
+}
+document.getElementById('acctFilterForm')?.addEventListener('submit', function() {
+  const mode = document.querySelector('input[name="mode"]:checked')?.value || 'month';
+  clearPeriodNames();
+  if (mode === 'day') {
+    document.getElementById('filter_date')?.setAttribute('name', 'date');
+  } else if (mode === 'month') {
+    document.getElementById('filter_month')?.setAttribute('name', 'month');
+  } else if (mode === 'quarter') {
+    document.getElementById('filter_year_q')?.setAttribute('name', 'year');
+    document.getElementById('filter_quarter')?.setAttribute('name', 'quarter');
+  } else if (mode === 'year') {
+    document.getElementById('filter_year')?.setAttribute('name', 'year');
+  }
+});
+togglePeriodInputs();
+</script>
+{% endblock %}

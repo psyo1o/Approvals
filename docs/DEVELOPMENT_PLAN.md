@@ -1,6 +1,6 @@
 # 결재 시스템 확장 — 개발 계획 및 진행 기록
 
-> 일정관리 / 업무일지·출장복명서 / 품질문서(NAS 연동) 확장을 **Phase 1~4**로 나누어 구현.  
+> 일정관리 / 업무일지·출장복명서 / 품질문서(NAS 연동) / **회계(일월계표·미수금)** 확장을 **Phase 1~5**로 나누어 구현.  
 > 각 Phase 완료 시 이 문서에 기록 갱신.
 
 ---
@@ -15,6 +15,11 @@
 | 4 | 품질문서 NAS 연동·재개정 | ✅ 완료 | 2026-05-13 |
 | 4-v2 | 품질문서 이력관리·버전비교 UI | ✅ 완료 | 2026-05-14 |
 | 기타 | 알림 고도화 및 공지사항 연동 | ✅ 완료 | 2026-05-14 |
+| **5** | **회계 — 지역·수금·일월계표·미수금대장** | ✅ 완료 | 2026-05-19 |
+| 5+ | 일월계표 분기·연별 조회 (5.3 확장) | ✅ 완료 | 2026-05-19 |
+| UI | 공통·관리 화면 디자인 개편 | ✅ 완료 | 2026-05-19 |
+
+> **Phase 5.5는 계획에 없음.** 5.1~5.4 + 분기·연별 확장으로 Phase 5 범위 종료.
 
 ---
 
@@ -30,6 +35,13 @@
 | 2026-05-13 | 버그 수정: `scan_tree` rel_path 재귀 버그, 한글 파일명 인코딩 |
 | 2026-05-14 | **알림 센터 고도화**: (1) `base.html` 알림 아이콘을 인페이지 드롭다운 팝업으로 변경. (2) `api_notifications_list`, `api_notification_read` 등 알림 API 추가. (3) 결재 상신, 승인, 반려, 쪽지 발송 시 `_notify` 헬퍼로 알림 자동 생성 로직 추가. (4) "공지"가 포함된 게시판에 글 작성 시 전 직원에게 알림 발송되도록 구현. |
 | 2026-05-14 | **Phase 4-v2 완료**: 이력관리·버전비교 UI, 아카이빙, API 추가 |
+| 2026-05-19 | **Phase 5 완료**: Region/Collection, 출장 지역 UI, 일월계표, 미수금대장, `APPROVED_FINAL` |
+| 2026-05-19 | 일월계표 **분기·연별** 조회 추가 (5.3 확장, 별도 Phase 번호 없음) |
+| 2026-05-19 | **UI 개편**: `style.css` 통합, 상단 네비 한 줄·아이콘, Pretendard, 관리 화면(사용자/직급 탭·CSV 안내) |
+| 2026-05-19 | **스키마 보강**: `attachments.uploader_id` 등 구 DB 마이그레이션, 문서 상세 500 오류 수정 |
+| 2026-05-19 | `/admin` → `/admin/users` 리다이렉트, 구 `admin.html` 제거 |
+| 2026-05-19 | **`docs/REFERENCE.md` 신규** — 전 라우트·상태·DB·관리 API 현황 상세 목록 |
+| 2026-05-19 | **관리 POST API 구현** — 사용자·CSV·직급 CRUD, PW 초기화, flash 메시지 |
 
 ---
 
@@ -167,6 +179,67 @@
 | `app/main.py` | 4개 신규 API 라우트 추가 |
 | `app/templates/quality_library.html` | SPA식 전면 개편 |
 
+## Phase 5 — 회계 (지역 정규화 · 일월계표 · 미수금대장)
+
+**목표:** 출장복명서 청구 데이터와 수금 데이터를 연결해 자금 흐름·미수금을 관리 (미니 ERP 회계 모듈).
+
+### Phase 5.1 — DB 스키마
+
+| 모델 | 테이블 | 용도 |
+|------|--------|------|
+| Region | regions | 출장/회계 지역 마스터 (`id`, `name` UNIQUE) |
+| Collection | collections | 수금 내역 (`company_name`, `region_name`, `amount`, `collection_date`, `note`) |
+| TripReport (확장) | trip_reports | `region_id` FK → regions |
+
+- `migrate_schema()`: 테이블 생성, `trip_reports.region_id` 컬럼, 기본 지역 시드(원주·제천·단양)
+- 기존 `APPROVED` 문서 → `APPROVED_FINAL` 일괄 변환 (마이그레이션)
+
+### Phase 5.2 — 출장복명서 UI
+
+- `doc_new.html`: **출장 지역** `<select>` + 「+ 새 지역 추가」 모달
+- `GET/POST /api/regions` — 목록·등록 (페이지 새로고침 없이 드롭다운 반영)
+- 결재 최종 완료 시 문서 상태 **`APPROVED_FINAL`**
+- 회계 청구 집계: `query_trip_billing_lines()` — **APPROVED_FINAL** 출장복명서 라인만 (외상+현금)
+
+### Phase 5.3 — 일월계표 (`/accounting/dashboard`)
+
+- 청구액(출장복명서) vs 수금액(`collections`) 비교 대시보드
+- 조회 단위: **일별 / 월별 / 분기 / 연별** (`func.sum`, `group_by`)
+  - 월별·분기·연별: 기간 내 **월별** 상세 테이블
+  - 일별: 당일 요약 1행
+- 네비: **일월계표** · **미수금대장**
+
+### Phase 5.4 — 미수금대장 (`/accounting/ledger`)
+
+- 필터: 기준월, 지역(Region), 업체명
+- 컬럼: 전월이월 · 당기발생 · 당기수금 · 미수잔액 (DB `case`/`sum`/`group_by`)
+- 행별 **수금 등록** → `POST /api/collections` → 화면 즉시 반영
+- **PDF 다운로드** (html2pdf.js, A4 가로)
+
+### 수정·신규 파일
+
+| 파일 | 변경 |
+|------|------|
+| `app/main.py` | Region, Collection 모델, 회계 집계 헬퍼, 라우트 4개, `APPROVED_FINAL` |
+| `app/templates/doc_new.html` | 지역 드롭다운·모달·JS |
+| `app/templates/doc.html` | 출장 지역·상세 출장지 표시 |
+| `app/templates/accounting_dashboard.html` | 일월계표 UI (신규) |
+| `app/templates/accounting_ledger.html` | 미수금대장 UI (신규) |
+| `app/templates/base.html` | 일월계표·미수금대장 네비 |
+
+### 배포 시 주의 (재시작)
+
+코드 반영 후 **애플리케이션 컨테이너를 재시작**해야 합니다. 서버 기동 시 `migrate_schema()`가 자동 실행되어 신규 테이블·컬럼이 생성됩니다.
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+로컬 개발 시에도 FastAPI 프로세스를 한 번 재시작하세요.
+
+---
+
 ## 기타 기능 개선 (알림 고도화)
 
 **목표:** 페이지 이동 없이 알림을 확인하고, 주요 이벤트(결재, 공지, 쪽지) 발생 시 즉각적으로 사용자에게 푸시
@@ -188,12 +261,60 @@
 
 ---
 
+## UI 개편 — 공통 레이아웃·시스템 관리 (2026-05-19)
+
+**목표:** 그룹웨어형 상단 네비 + 관리 화면 가독성, CSV 등록 안내 강화
+
+### 공통 (`base.html` + `style.css`)
+
+- 헤더 최대 너비 1440px, 메뉴 **한 줄** 배치 (문서·완료·일월계표·미수금·게시판·쪽지·품질·일정·조직도·내정보)
+- 메뉴별 SVG 아이콘, 현재 경로 **active** 스타일
+- Pretendard Variable (CDN), 슬레이트 톤 + 블루 포인트
+- 인라인 CSS 제거 → `app/static/style.css` 일원화
+
+### 시스템 관리
+
+| 파일 | 역할 |
+|------|------|
+| `templates/partials/admin_nav.html` | 사용자 / 직급 탭 |
+| `templates/admin_users.html` | 통계 카드, 사용자 추가·CSV·목록 |
+| `templates/admin_grades.html` | 직급 추가·목록·비활성/복구 |
+| `templates/admin_user_edit.html` | 사용자 수정 폼 |
+
+- CSV 일괄 등록: 컬럼 표·예시 3행·엑셀 UTF-8 저장 안내 (화면 내)
+- `GET /admin` → `303` → `/admin/users`
+
+### 스키마·버그
+
+- `migrate_schema()`: `attachments`에 `uploader_id`, `filesize`, `created_at` 보강 + 기존 행 `creator_id` 백필
+- `doc_view`: 첨부 `joinedload` + `selectinload`(출장/업무일지 lines) — 완료 문서 보기 500 방지
+
+### CSV 일괄 등록 (화면 안내)
+
+`admin_users.html`에 컬럼 표·예시 CSV 3행·엑셀 UTF-8·`is_admin` 규칙·초기 PW `changeme123!` 문서화.
+
+---
+
+## 알려진 제한사항 · 후속 작업
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| 관리 POST API | ✅ 구현 (2026-05-19) | 사용자·직급·CSV·PW 초기화 |
+| `users.grade` | 문자열 필드 | `grades` 테이블과 이름으로 연동 (FK 아님) |
+| `requirements.txt` | 중복 항목 | 상단 비고정 + 하단 pinned 버전 공존 |
+
+상세 라우트 표: [REFERENCE.md](REFERENCE.md)
+
+---
+
 ## 기타 수정사항
 
 | 날짜 | 내용 |
 |------|------|
 | 2026-05-13 | `base.html` 네비에서 직급 링크 제거 (사용자 관리에서 접근 가능) |
 | 2026-05-14 | `README.md` 전면 개편, `docs/ARCHITECTURE.md` 신규 작성, `FIXES_SUMMARY.md` 갱신 |
+| 2026-05-19 | Phase 5 회계 모듈 문서 반영 (`DEVELOPMENT_PLAN`, `ARCHITECTURE`, `README`, `FIXES_SUMMARY`) |
+| 2026-05-19 | UI·관리 화면·CSV 안내·`attachments` 마이그레이션 문서 반영 |
 
 ---
 
@@ -201,6 +322,7 @@
 
 | 문서 | 설명 |
 |------|------|
-| `README.md` | 설치, 사용법, 환경변수, 폴더 구조 |
-| `docs/ARCHITECTURE.md` | 파일 구조, DB 스키마, 라우트 맵, 작동 로직 상세 |
-| `FIXES_SUMMARY.md` | 초기 버그 수정 + Phase 1~4 전체 변경 이력 |
+| `README.md` | 설치, 사용법, 환경변수, CSV, 회계, UI 요약 |
+| `docs/ARCHITECTURE.md` | 파일 구조, DB 스키마, 작동 로직·흐름도 |
+| `docs/REFERENCE.md` | **전체 HTTP 라우트·상태·모델·migrate·운영** |
+| `FIXES_SUMMARY.md` | 초기 버그 수정 + Phase 1~5 변경 이력 |

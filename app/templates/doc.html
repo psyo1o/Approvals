@@ -51,7 +51,8 @@
     <h4 style="margin:0 0 10px 0;">출장복명서 상세</h4>
     <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
       <div><b>출장일자:</b> {{ trip_report.trip_date or "-" }}</div>
-      <div><b>출장지:</b> {{ trip_report.destination or "-" }}</div>
+      <div><b>출장 지역:</b> {{ trip_report.region.name if trip_report.region else "-" }}</div>
+      <div><b>출장지 (상세):</b> {{ trip_report.destination or "-" }}</div>
       <div><b>목적:</b> {{ trip_report.purpose or "-" }}</div>
     </div>
     {% if trip_report.registration_file_path %}
@@ -83,8 +84,8 @@
         <tfoot>
           <tr>
             <td colspan="5" style="text-align:right;font-weight:bold;">합계:</td>
-            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_report.lines|sum(attribute='credit_amount')) }}</td>
-            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_report.lines|sum(attribute='cash_amount')) }}</td>
+            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_credit_total) }}</td>
+            <td style="text-align:right;font-weight:bold;">{{ "{:,}".format(trip_cash_total) }}</td>
           </tr>
         </tfoot>
       </table>
@@ -103,7 +104,7 @@
 
   <div style="margin-top:10px">
     <a class="btn2" href="/file/original/{{ doc.id }}">원본 다운로드</a>
-    {% if doc.status == "APPROVED" %}
+    {% if doc.status == "APPROVED" or doc.status == "APPROVED_FINAL" %}
       <a class="btn2" href="/preview/history/{{ doc.id }}" target="_blank">결재이력 미리보기</a>
       <a class="btn2" href="/file/history/{{ doc.id }}">결재이력 다운로드</a>
       <a class="btn2" href="/doc/{{ doc.id }}/pdf" target="_blank">PDF 다운로드</a>
@@ -155,7 +156,7 @@
         <td>{{ a.seq }}차</td>
         <td>{{ a.user.name if a.user else '-' }}</td>
         <td>{{ a.action }}</td>
-        <td>{{ a.acted_at or "" }}</td>
+        <td>{{ a.acted_at.strftime('%Y-%m-%d %H:%M') if a.acted_at else '' }}</td>
       </tr>
     {% endfor %}
     </tbody>

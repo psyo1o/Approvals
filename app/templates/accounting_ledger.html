@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block content %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" crossorigin="anonymous"></script>
+<style>
+  .ledger-toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; justify-content:space-between; margin-bottom:16px; }
+  .ledger-filter { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; padding:14px; background:#f8fafc; border-radius:10px; border:1px solid var(--border); margin-bottom:16px; }
+  .ledger-filter .field { min-width:140px; }
+  .ledger-filter label { display:block; font-size:13px; font-weight:600; margin-bottom:4px; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.show { display:flex; }
+  .modal-box { background:var(--card,#fff); border-radius:12px; padding:24px; width:90%; max-width:420px; box-shadow:0 8px 30px rgba(0,0,0,.15); }
+  .modal-box h3 { margin:0 0 14px 0; }
+  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .field-error { color:var(--danger); font-size:13px; min-height:1.2em; margin-top:6px; }
+  #ledger_print { background:#fff; }
+  @media print { .no-print { display:none !important; } }
+</style>
+
+<div class="card no-print">
+  <div class="ledger-toolbar">
+    <div>
+      <h2 style="margin:0;">미수금대장</h2>
+      <p class="muted" style="margin:4px 0 0 0;">기준월 {{ month_ref }} · 업체·지역별 미수 잔액(이월 누적 포함)</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <a class="btn ghost" href="/accounting/dashboard">← 일월계표</a>
+      <button type="button" class="btn primary" onclick="downloadLedgerPdf()">PDF 다운로드</button>
+    </div>
+  </div>
+
+  <form method="get" action="/accounting/ledger" class="ledger-filter">
+    <div class="field">
+      <label for="ledger_month">기준월</label>
+      <input type="month" name="month" id="ledger_month" value="{{ month_ref }}" required>
+    </div>
+    <div class="field">
+      <label for="ledger_region">지역</label>
+      <select name="region_id" id="ledger_region">
+        <option value="">전체</option>
+        {% for r in regions %}
+        <option value="{{ r.id }}" {% if region_id and region_id == (r.id|string) %}selected{% endif %}>{{ r.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="ledger_company">업체명</label>
+      <input type="text" name="company" id="ledger_company" value="{{ company_q }}" placeholder="검색">
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button type="submit" class="btn primary">조회</button>
+    </div>
+  </form>
+</div>
+
+<div id="ledger_print" class="card" style="margin-top:0;">
+  <div style="margin-bottom:12px;">
+    <h3 style="margin:0 0 4px 0;">미수금대장</h3>
+    <p class="muted" style="margin:0;font-size:13px;">기준월: {{ month_ref }} {% if company_q %}· 업체: {{ company_q }}{% endif %}</p>
+  </div>
+  <div class="table-responsive">
+    <table class="table" id="ledger_table">
+      <thead>
+        <tr>
+          <th>업체명</th>
+          <th>지역</th>
+          <th class="num">이월(누적)</th>
+          <th class="num">당기발생</th>
+          <th class="num">당기수금</th>
+          <th class="num">미수잔액</th>
+          <th class="no-print">수금</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in ledger_rows %}
+        <tr data-company="{{ row.company_name }}" data-region="{{ row.region_name }}" data-balance="{{ row.balance }}">
+          <td>{{ row.company_name }}</td>
+          <td>{{ row.region_name }}</td>
+          <td class="num">{{ "{:,}".format(row.opening) }}</td>
+          <td class="num">{{ "{:,}".format(row.billing_current) }}</td>
+          <td class="num coll-cell">{{ "{:,}".format(row.collection_current) }}</td>
+          <td class="num bal-cell">{{ "{:,}".format(row.balance) }}</td>
+          <td class="no-print">
+            <button type="button" class="btn ghost btn-collect" style="padding:6px 10px;font-size:13px;"
+              data-balance="{{ row.balance }}">수금 등록</button>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="muted" style="text-align:center;">조회 결과가 없습니다.</td></tr>
+        {% endfor %}
+      </tbody>
+      {% if ledger_rows|length > 0 %}
+      <tfoot>
+        <tr style="font-weight:bold;background:#f9fafb;">
+          <td colspan="2">합계</td>
+          <td class="num">{{ "{:,}".format(totals.opening) }}</td>
+          <td class="num">{{ "{:,}".format(totals.billing_current) }}</td>
+          <td class="num" id="foot_collection">{{ "{:,}".format(totals.collection_current) }}</td>
+          <td class="num" id="foot_balance">{{ "{:,}".format(totals.balance) }}</td>
+          <td class="no-print"></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+
+<div class="modal-overlay no-print" id="collectModal" onclick="if(event.target===this) closeCollectModal()">
+  <div class="modal-box">
+    <h3>수금 등록</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 12px 0;" id="collect_target"></p>
+    <input type="hidden" id="c_company">
+    <input type="hidden" id="c_region">
+    <label for="c_date">수금일</label>
+    <input type="date" id="c_date" required>
+    <label for="c_amount" style="margin-top:10px;display:block;">수금액 (원)</label>
+    <input type="text" id="c_amount" inputmode="numeric" required placeholder="0">
+    <label for="c_note" style="margin-top:10px;display:block;">비고</label>
+    <input type="text" id="c_note" placeholder="선택">
+    <div id="collect_error" class="field-error"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" onclick="closeCollectModal()">취소</button>
+      <button type="button" class="btn primary" onclick="saveCollection()">저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function fmt(n) { return (n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function unfmt(s) { return parseInt(String(s || '').replace(/,/g, ''), 10) || 0; }
+
+function openCollectModal(company, region, balance) {
+  document.getElementById('c_company').value = company;
+  document.getElementById('c_region').value = region;
+  document.getElementById('collect_target').textContent = company + ' / ' + region + ' (현재 미수 ' + fmt(balance) + '원)';
+  document.getElementById('c_amount').value = '';
+  document.getElementById('c_note').value = '';
+  document.getElementById('collect_error').textContent = '';
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('c_date').value = today;
+  document.getElementById('collectModal').classList.add('show');
+}
+
+function closeCollectModal() {
+  document.getElementById('collectModal').classList.remove('show');
+}
+
+async function saveCollection() {
+  const errEl = document.getElementById('collect_error');
+  const amount = unfmt(document.getElementById('c_amount').value);
+  const payload = {
+    company_name: document.getElementById('c_company').value,
+    region_name: document.getElementById('c_region').value,
+    collection_date: document.getElementById('c_date').value,
+    amount,
+    note: document.getElementById('c_note').value.trim(),
+  };
+  if (!payload.collection_date || amount <= 0) {
+    errEl.textContent = '수금일과 금액을 입력하세요.';
+    return;
+  }
+  try {
+    const res = await fetch('/api/collections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      errEl.textContent = data.detail || '저장에 실패했습니다.';
+      return;
+    }
+    const data = await res.json();
+    const tr = [...document.querySelectorAll('#ledger_table tbody tr')].find(r =>
+      r.dataset.company === payload.company_name && r.dataset.region === payload.region_name
+    );
+    if (tr) {
+      const collCell = tr.querySelector('.coll-cell');
+      const balCell = tr.querySelector('.bal-cell');
+      const newColl = unfmt(collCell.textContent) + data.amount;
+      const newBal = unfmt(balCell.textContent) - data.amount;
+      collCell.textContent = fmt(newColl);
+      balCell.textContent = fmt(newBal);
+      tr.dataset.balance = String(newBal);
+      const footColl = document.getElementById('foot_collection');
+      const footBal = document.getElementById('foot_balance');
+      if (footColl) footColl.textContent = fmt(unfmt(footColl.textContent) + data.amount);
+      if (footBal) footBal.textContent = fmt(unfmt(footBal.textContent) - data.amount);
+    }
+    closeCollectModal();
+  } catch (e) {
+    errEl.textContent = '네트워크 오류가 발생했습니다.';
+  }
+}
+
+document.querySelectorAll('.btn-collect').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const tr = this.closest('tr');
+    if (!tr) return;
+    openCollectModal(tr.dataset.company || '', tr.dataset.region || '', parseInt(tr.dataset.balance || '0', 10));
+  });
+});
+
+function downloadLedgerPdf() {
+  const el = document.getElementById('ledger_print');
+  const opt = {
+    margin: 10,
+    filename: '미수금대장_{{ month_ref }}.pdf',
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+  };
+  html2pdf().set(opt).from(el).save();
+}
+</script>
+{% endblock %}

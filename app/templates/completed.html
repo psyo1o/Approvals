@@ -2,9 +2,9 @@
 {% block content %}
 <div class="card">
   <h2>완료 문서 검색</h2>
-  <p class="hint">
+  <p class="muted">
     검색 대상: <b>문서번호</b> / <b>제목</b> / <b>상신자</b><br>
-    완료 상태: APPROVED_FINAL / FINAL_LOCKED
+    <b>결재완료</b> 문서만 표시됩니다.
   </p>
   <form method="get" action="/completed" style="display:grid;grid-template-columns:1fr 1fr 1fr 160px 160px;gap:8px;align-items:center">
      <input name="doc_no" value="{{doc_no}}" placeholder="문서번호" class="input-sm">
@@ -26,7 +26,19 @@
         <td>{{d.rev}}</td>
         <td>{{d.title}}</td>
         <td>{{d.submitter.name}}</td>
-        <td><span class="badge">{{d.status}}</span></td>
+        <td>
+          {% if d.status == "DRAFT" %}
+            <span class="badge">작성중</span>
+          {% elif d.status == "SUBMITTED" or d.status == "IN_REVIEW" or d.status == "IN_PROGRESS" %}
+            <span class="badge badge-amber">결재중</span>
+          {% elif d.status == "APPROVED" or d.status == "APPROVED_FINAL" %}
+            <span class="badge badge-green">결재완료</span>
+          {% elif d.status == "REJECTED" %}
+            <span class="badge badge-red">반려</span>
+          {% else %}
+            <span class="badge">{{ d.status }}</span>
+          {% endif %}
+        </td>
         <td>{% if d.final_approver %}{{d.final_approver.name}}{% else %}-{% endif %}</td>
         <td>
           {% if d.final_path %}

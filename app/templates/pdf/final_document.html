@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>{{ doc.title or '문서' }}</title>
+  <style>
+    @page { size: A4; margin: 18mm 14mm 16mm 14mm; }
+    @font-face { font-family: PdfKorean; src: url(pdf-korean.ttf); }
+    body { margin: 0; font-family: PdfKorean, sans-serif; font-size: 10.5pt; color: #111; line-height: 1.5; }
+    .header { width: 100%; margin-bottom: 14pt; overflow: hidden; }
+    .title { font-size: 15pt; font-weight: 700; margin: 0 0 8pt 0; padding-right: 8pt; max-width: 58%; }
+    .body { white-space: pre-wrap; word-break: break-word; }
+    .meta { font-size: 9pt; color: #666; margin-top: 12pt; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div style="float:right; max-width:62%;">
+      {% include "pdf/partials/approval_line.html" %}
+    </div>
+    <h1 class="title">{{ doc.title or '(제목 없음)' }}</h1>
+  </div>
+  <div class="body">{{ doc.body or '' }}</div>
+  <p class="meta">문서번호 #{{ doc.id }} · {{ doc.doc_no or '-' }}</p>
+</body>
+</html>
