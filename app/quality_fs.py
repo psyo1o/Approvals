@@ -1,7 +1,5 @@
 """
-Phase 4 — NAS 볼륨 품질문서 스캔 서비스
-docker-compose에서 마운트된 /app/nas_external (읽기 전용)을 스캔하여
-폴더 트리와 파일 목록을 반환한다.
+Phase 4 / 7 — NAS 볼륨 품질문서 스캔 (지사별 루트).
 """
 from __future__ import annotations
 import os
@@ -9,6 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 NAS_ROOT = os.environ.get("QUALITY_NAS_ROOT", "/app/nas_external")
+NAS_ROOT_WONJU = os.environ.get("QUALITY_NAS_ROOT_WONJU", NAS_ROOT)
+NAS_ROOT_JECHEON = os.environ.get("QUALITY_NAS_ROOT_JECHEON", NAS_ROOT)
+
+DEFAULT_BRANCH_ID = 1
+JECHEON_BRANCH_ID = 2
 
 VIEWABLE_EXTENSIONS = {".pdf"}
 DOWNLOADABLE_EXTENSIONS = {
@@ -19,6 +22,30 @@ DOWNLOADABLE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif",
     ".zip", ".7z",
 }
+
+# NAS/OS 숨김·시스템 파일 (품질문서 트리·검색에서 제외)
+_HIDDEN_BASENAMES = frozenset(
+    {"thumbs.db", "desktop.ini", ".ds_store", "icon\r", "icon"}
+)
+
+
+def _is_hidden_name(name: str) -> bool:
+    """점(.) 시작, Synology @폴더, macOS ._ 리소스 등."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    if n.startswith(".") or n.startswith("@") or n.startswith("._"):
+        return True
+    if n.lower() in _HIDDEN_BASENAMES:
+        return True
+    return False
+
+
+def nas_root_for_branch(branch_id: Optional[int] = None) -> str:
+    bid = int(branch_id) if branch_id is not None else DEFAULT_BRANCH_ID
+    if bid == JECHEON_BRANCH_ID:
+        return NAS_ROOT_JECHEON
+    return NAS_ROOT_WONJU
 
 
 def _safe_resolve(base: str, rel: str) -> Optional[str]:
@@ -33,14 +60,16 @@ def _safe_resolve(base: str, rel: str) -> Optional[str]:
     return None
 
 
-def scan_tree(current: str = NAS_ROOT, *, _origin: str = "") -> list[dict]:
-    """
-    NAS 루트 아래 폴더 트리를 재귀 스캔하여 리스트로 반환.
-    rel_path는 항상 최초 루트(_origin) 기준이므로 다운로드/뷰 URL에 그대로 사용 가능.
-    """
-    origin = _origin or current
+def scan_tree(
+    current: Optional[str] = None,
+    *,
+    branch_id: Optional[int] = None,
+    _origin: str = "",
+) -> list[dict]:
+    root = current or nas_root_for_branch(branch_id)
+    origin = _origin or root
     result = []
-    cur_p = Path(current)
+    cur_p = Path(root)
     origin_p = Path(origin)
     if not cur_p.is_dir():
         return result
@@ -51,6 +80,8 @@ def scan_tree(current: str = NAS_ROOT, *, _origin: str = "") -> list[dict]:
         return result
 
     for entry in entries:
+        if _is_hidden_name(entry.name):
+            continue
         rel = str(entry.relative_to(origin_p))
         node: dict = {
             "name": entry.name,
@@ -61,19 +92,22 @@ def scan_tree(current: str = NAS_ROOT, *, _origin: str = "") -> list[dict]:
             "children": [],
         }
         if entry.is_dir():
-            node["children"] = scan_tree(str(entry), _origin=origin)
+            node["children"] = scan_tree(str(entry), branch_id=branch_id, _origin=origin)
         result.append(node)
     return result
 
 
-def search_files(query: str, root: str = NAS_ROOT) -> list[dict]:
+def search_files(query: str, *, branch_id: Optional[int] = None, root: Optional[str] = None) -> list[dict]:
     """파일명·경로에 query가 포함된 파일만 플랫 리스트로 반환"""
+    root = root or nas_root_for_branch(branch_id)
     results = []
     q = query.lower()
     root_p = Path(root)
     if not root_p.is_dir():
         return results
     for p in root_p.rglob("*"):
+        if any(_is_hidden_name(part) for part in p.parts):
+            continue
         if p.is_file() and q in p.name.lower():
             results.append({
                 "name": p.name,
@@ -84,8 +118,8 @@ def search_files(query: str, root: str = NAS_ROOT) -> list[dict]:
     return results
 
 
-def resolve_file_path(rel_path: str, root: str = NAS_ROOT) -> Optional[str]:
-    """상대 경로를 검증 후 절대 경로 반환 (traversal 차단)"""
+def resolve_file_path(rel_path: str, *, branch_id: Optional[int] = None, root: Optional[str] = None) -> Optional[str]:
+    root = root or nas_root_for_branch(branch_id)
     return _safe_resolve(root, rel_path)
 
 

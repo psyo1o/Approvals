@@ -42,7 +42,17 @@
     .fc .fc-button { padding:4px 8px; font-size:12px; }
     .form-row-inline { flex-direction:column; gap:8px; }
     .cal-legend { gap:6px; font-size:12px; }
+    .trip-member-grid { max-height:160px; }
   }
+  .trip-member-grid {
+    display:flex; flex-wrap:wrap; gap:8px; max-height:220px; overflow-y:auto;
+    padding:8px; border:1px solid var(--border); border-radius:8px; background:#f8fafc;
+  }
+  .trip-member-chip {
+    display:flex; align-items:flex-start; gap:6px; font-size:13px; padding:6px 8px;
+    border:1px solid var(--border); border-radius:8px; background:#fff; cursor:pointer;
+  }
+  .trip-member-chip input { margin-top:3px; flex-shrink:0; }
 </style>
 
 <!-- 헤더 -->
@@ -94,7 +104,7 @@
     <form method="POST" action="/api/schedules">
       <div class="form-row">
         <label>일정 유형</label>
-        <select name="schedule_type">
+        <select name="schedule_type" id="add_schedule_type" onchange="toggleTripMembers()">
           {% for k, v in schedule_types.items() %}
             {% if k != 'LEAVE' %}
             <option value="{{ k }}">{{ v }}</option>
@@ -102,9 +112,21 @@
           {% endfor %}
         </select>
       </div>
+      <div class="form-row" id="trip_members_row" style="display:none;">
+        <label>출장자 (선택, 복수 가능)</label>
+        <p class="muted small" style="margin:0 0 8px 0;">측정팀 일정 기간 중 출장 인원. 주말·평일 업무일지·근무 판정에 반영됩니다.</p>
+        <div class="trip-member-grid">
+          {% for u in branch_users %}
+          <label class="trip-member-chip">
+            <input type="checkbox" name="trip_user_ids" value="{{ u.id }}">
+            <span>{{ u.name }} <span class="muted">· {{ u.dept or '부서미지정' }} · {{ u.grade or '-' }}</span></span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
       <div class="form-row">
         <label>제목</label>
-        <input type="text" name="title" required placeholder="예: 전체 회의, 팀 미팅 등">
+        <input type="text" name="title" required placeholder="예: ○○지역 측정, 팀 미팅 등">
       </div>
       <div class="form-row-inline">
         <div class="form-row">
@@ -138,6 +160,7 @@
       <p><strong>유형:</strong> <span id="det_type"></span></p>
       <p><strong>기간:</strong> <span id="det_period"></span></p>
       <p><strong>등록자:</strong> <span id="det_user"></span></p>
+      <p id="det_trip_row"><strong>출장자:</strong> <span id="det_trip"></span></p>
       <p><strong>메모:</strong><br><span id="det_memo" style="white-space:pre-wrap;"></span></p>
     </div>
     <div id="det_actions" style="text-align:right;"></div>
@@ -154,7 +177,15 @@ function openAddModal() {
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('add_start').value = today;
   document.getElementById('add_end').value = today;
+  toggleTripMembers();
   document.getElementById('addModal').classList.add('open');
+}
+function toggleTripMembers() {
+  var sel = document.getElementById('add_schedule_type');
+  var row = document.getElementById('trip_members_row');
+  if (!sel || !row) return;
+  var isTeam = (sel.value || '').indexOf('TEAM_') === 0;
+  row.style.display = isTeam ? '' : 'none';
 }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
@@ -209,6 +240,16 @@ document.addEventListener('DOMContentLoaded', function() {
       if (ev.allDay) period += ' (종일)';
       document.getElementById('det_period').innerText = period;
       document.getElementById('det_user').innerText = p.user_name || '';
+      var tripEl = document.getElementById('det_trip');
+      if (tripEl) {
+        if (p.trip_user_names && p.trip_user_names.length) {
+          tripEl.innerText = p.trip_user_names.join(', ');
+          tripEl.parentElement.style.display = '';
+        } else {
+          tripEl.innerText = '-';
+          tripEl.parentElement.style.display = 'none';
+        }
+      }
       document.getElementById('det_memo').innerText = p.memo || p.description || '내용 없음';
 
       var act = document.getElementById('det_actions');

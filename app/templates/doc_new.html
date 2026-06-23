@@ -2,6 +2,15 @@
 {% block content %}
 <div class="card">
   <h2 style="margin:0 0 20px 0;">새 문서 작성</h2>
+  {% if flash %}<div class="alert" style="margin-bottom:12px;">{{ flash }}</div>{% endif %}
+  <p class="muted small" style="margin:0 0 8px 0;">
+    업무일지: 활성 직원 전원(「관리자」직급·당일 휴가 제외).
+    출장복명서: <strong>{{ trip_writer_dept_label }}</strong> 소속만.
+  </p>
+  <div id="approval_guide_box" class="card" style="background:#f0fdf4; border:1px solid #bbf7d0; padding:10px 14px; margin-bottom:12px;">
+    <strong>결재선 안내</strong>
+    <p id="approval_guide_text" class="muted small" style="margin:6px 0 0 0;"></p>
+  </div>
 
   <form method="post" action="/doc/new" id="doc_form" enctype="multipart/form-data">
     <div class="grid">
@@ -12,11 +21,23 @@
           <option value="LEAVE">휴가신청서</option>
           <option value="EXPENSE">지출결의서</option>
           <option value="OVERTIME">연장근무 신청서</option>
+          <option value="EARLY_ARRIVAL">조기출근 신청서</option>
+          <option value="WEEKEND_WORK">주말근무 신청서</option>
           <option value="CERTIFICATE">증명서 발급 신청서</option>
           <option value="QUALITY">품질문서</option>
-          <option value="WORK_LOG">업무일지</option>
-          <option value="TRIP_REPORT">출장복명서</option>
+          {% set wl = doc_type_perms.WORK_LOG if doc_type_perms else {} %}
+          <option value="WORK_LOG" {% if not wl.get('allowed', true) %}disabled title="{{ wl.get('reason', '') }}"{% endif %}
+            {% if default_doc_type == 'WORK_LOG' %}selected{% endif %}>업무일지</option>
+          {% set tr = doc_type_perms.TRIP_REPORT if doc_type_perms else {} %}
+          <option value="TRIP_REPORT" {% if not tr.get('allowed', true) %}disabled title="{{ tr.get('reason', '') }}"{% endif %}
+            {% if default_doc_type == 'TRIP_REPORT' %}selected{% endif %}>출장복명서</option>
         </select>
+        {% if doc_type_perms and not doc_type_perms.WORK_LOG.allowed %}
+        <small class="muted" style="display:block;margin-top:4px;">업무일지: {{ doc_type_perms.WORK_LOG.reason }}</small>
+        {% endif %}
+        {% if doc_type_perms and not doc_type_perms.TRIP_REPORT.allowed %}
+        <small class="muted" style="display:block;margin-top:4px;">출장복명서: {{ doc_type_perms.TRIP_REPORT.reason }}</small>
+        {% endif %}
       </div>
     </div>
 
@@ -44,7 +65,7 @@
     </div>
     <div class="row" style="margin-top:20px; justify-content:flex-end;">
       <a class="btn ghost" href="/dashboard">취소</a>
-      <button class="btn primary" type="submit">저장하고 결재선 지정하기</button>
+      <button class="btn primary" type="submit" id="doc_new_submit_btn">저장하고 결재선 지정하기</button>
     </div>
   </form>
 </div>
@@ -65,31 +86,51 @@
 <template id="form_template_leave">
   <div class="card" style="background: #f8fafc;">
     <h4 style="margin-top:0;">* 휴가 신청 상세</h4>
+    <p class="muted small">결재: <strong>담당 → 이사 → 대표 → 고문</strong></p>
     <div class="grid">
       <div>
         <label>휴가 종류</label>
-        <select name="leave_kind" required>
+        <select name="leave_kind" id="leave_kind_select" required>
           <option value="연차">연차</option>
           <option value="반차(오전)">반차(오전)</option>
           <option value="반차(오후)">반차(오후)</option>
+          <option value="외출">외출</option>
           <option value="병가">병가</option>
           <option value="공가">공가</option>
           <option value="기타">기타</option>
         </select>
       </div>
-      <div>
+      <div id="leave_hours_optional">
         <label>시간(선택)</label>
-        <input name="leave_hours" placeholder="예: 4h / 2h">
+        <input name="leave_hours" id="leave_hours_input" placeholder="예: 4h / 2h">
       </div>
     </div>
-    <div class="grid" style="margin-top:12px;">
+    <div id="leave_outing_row" class="grid" style="margin-top:12px; display:none;">
       <div>
-        <label>시작일</label>
-        <input type="date" name="leave_start" required>
+        <label>외출 시간</label>
+        <select name="outing_duration" id="outing_duration_select">
+          <option value="30분">30분 (기본)</option>
+          <option value="60분">1시간</option>
+          <option value="90분">1시간 30분</option>
+          <option value="120분">2시간</option>
+          <option value="180분">3시간</option>
+          <option value="240분">4시간</option>
+          <option value="300분">5시간</option>
+          <option value="360분">6시간</option>
+          <option value="420분">7시간</option>
+          <option value="510분">8시간 30분 (연차 1일)</option>
+        </select>
+        <div class="muted small" style="margin-top:6px;">근무 8.5시간 = 연차 1일 · 30분 단위</div>
       </div>
+    </div>
+    <div class="grid" style="margin-top:12px;" id="leave_date_row">
       <div>
+        <label id="leave_start_label">시작일</label>
+        <input type="date" name="leave_start" id="leave_start_input" required>
+      </div>
+      <div id="leave_end_wrap">
         <label>종료일</label>
-        <input type="date" name="leave_end" required>
+        <input type="date" name="leave_end" id="leave_end_input" required>
       </div>
     </div>
   </div>
@@ -126,14 +167,15 @@
 <template id="form_template_overtime">
   <div class="card" style="background: #f8fafc;">
     <h4 style="margin-top:0;">* 연장근무 신청 상세</h4>
+    <p class="muted small">승인 시 <a href="/work-schedule">근무표</a> 연장 반영 · 결재: <strong>담당 → 이사 → 대표</strong></p>
     <div class="grid">
       <div>
         <label>근무 일자</label>
         <input type="date" name="overtime_date" required>
       </div>
       <div>
-        <label>근무 사유</label>
-        <input type="text" name="overtime_reason" required placeholder="예: 긴급 서버 점검">
+        <label>근무 시간(선택, h)</label>
+        <input type="number" name="work_hours" step="0.5" min="0" placeholder="비우면 시작~종료 계산">
       </div>
     </div>
     <div class="grid" style="margin-top:12px;">
@@ -144,6 +186,46 @@
       <div>
         <label>종료 시간</label>
         <input type="time" name="overtime_end" required>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <label>근무 사유 / 업무내역</label>
+      <input type="text" name="overtime_reason" required placeholder="예: 긴급 서버 점검">
+    </div>
+  </div>
+</template>
+
+<template id="form_template_early_arrival">
+  <div class="card" style="background:#f8fafc;">
+    <h4 style="margin-top:0;">* 조기출근 신청</h4>
+    <p class="muted small">승인 시 근무표 조기출근 반영 · 결재: <strong>담당 → 이사 → 대표</strong></p>
+    <div class="grid">
+      <div>
+        <label>근무 일자</label>
+        <input type="date" name="early_date" id="early_date_input" required>
+        <input type="hidden" name="overtime_date" id="early_overtime_date">
+      </div>
+      <div>
+        <label>조기출근 시간(시간)</label>
+        <input type="number" name="work_hours" step="0.5" min="0.5" value="0.5" required placeholder="예: 1">
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="form_template_weekend_work">
+  <div class="card" style="background:#f8fafc;">
+    <h4 style="margin-top:0;">* 주말근무 신청</h4>
+    <p class="muted small">토·일 근무 시간 · 승인 시 근무표 반영 · 결재: <strong>담당 → 이사 → 대표</strong></p>
+    <div class="grid">
+      <div>
+        <label>근무 일자</label>
+        <input type="date" name="weekend_date" id="weekend_date_input" required>
+        <input type="hidden" name="overtime_date" id="weekend_overtime_date">
+      </div>
+      <div>
+        <label>근무 시간(시간)</label>
+        <input type="number" name="work_hours" step="0.5" min="0.5" value="8.5" required>
       </div>
     </div>
   </div>
@@ -381,7 +463,14 @@
   const commonTitleField = document.getElementById("common_title_field");
   const bodyLabel = document.getElementById("body_label");
 
-  const AUTO_TITLE_TYPES = ["LEAVE", "EXPENSE", "OVERTIME", "CERTIFICATE", "WORK_LOG", "TRIP_REPORT"];
+  const AUTO_TITLE_TYPES = ["LEAVE", "EXPENSE", "OVERTIME", "EARLY_ARRIVAL", "WEEKEND_WORK", "CERTIFICATE", "WORK_LOG", "TRIP_REPORT"];
+  const APPROVAL_GUIDES = {{ approval_guides | tojson }};
+
+  function updateApprovalGuide(docType) {
+    const el = document.getElementById('approval_guide_text');
+    if (!el) return;
+    el.textContent = APPROVAL_GUIDES[docType] || '결재선은 담당자에 따라 직접 선택하세요.';
+  }
 
   function updateForm(docType) {
     let templateId = "form_template_" + docType.toLowerCase();
@@ -403,11 +492,78 @@
     else { bodyLabel.innerText = "내용"; }
 
     if (docType === "EXPENSE") addExpenseRow();
-    if (docType === "WORK_LOG") addWorkLogRow();
+    const submitBtn = document.getElementById("doc_new_submit_btn");
+    if (submitBtn) {
+      submitBtn.textContent = docType === "WORK_LOG"
+        ? "업무일지 저장"
+        : "저장하고 결재선 지정하기";
+    }
+    if (docType === "WORK_LOG") {
+      addWorkLogRow();
+      const wd = formDetailsContainer.querySelector('input[name="work_date"]');
+      if (wd && !wd.value) wd.value = {{ work_log_today | tojson }};
+    }
     if (docType === "TRIP_REPORT") {
       addTripRow();
       loadTripRegions();
     }
+    if (docType === "LEAVE") {
+      bindLeaveForm();
+    }
+    if (docType === "EARLY_ARRIVAL") {
+      const ed = formDetailsContainer.querySelector('#early_date_input');
+      const od = formDetailsContainer.querySelector('#early_overtime_date');
+      const sync = () => { if (ed && od) od.value = ed.value; };
+      if (ed) { ed.addEventListener('change', sync); sync(); }
+    }
+    if (docType === "WEEKEND_WORK") {
+      const wd = formDetailsContainer.querySelector('#weekend_date_input');
+      const od = formDetailsContainer.querySelector('#weekend_overtime_date');
+      const sync = () => { if (wd && od) od.value = wd.value; };
+      if (wd) { wd.addEventListener('change', sync); sync(); }
+    }
+    updateApprovalGuide(docType);
+  }
+
+  function bindLeaveForm() {
+    const kindSel = formDetailsContainer.querySelector('#leave_kind_select');
+    const outingRow = formDetailsContainer.querySelector('#leave_outing_row');
+    const hoursOpt = formDetailsContainer.querySelector('#leave_hours_optional');
+    const endWrap = formDetailsContainer.querySelector('#leave_end_wrap');
+    const startLabel = formDetailsContainer.querySelector('#leave_start_label');
+    const startInp = formDetailsContainer.querySelector('#leave_start_input');
+    const endInp = formDetailsContainer.querySelector('#leave_end_input');
+    const hoursInp = formDetailsContainer.querySelector('#leave_hours_input');
+    const outingSel = formDetailsContainer.querySelector('#outing_duration_select');
+    if (!kindSel) return;
+
+    function syncOutingHours() {
+      if (outingSel && hoursInp && kindSel.value === '외출') {
+        hoursInp.value = outingSel.value;
+      }
+    }
+
+    function syncLeaveKind() {
+      const isOuting = kindSel.value === '외출';
+      if (outingRow) outingRow.style.display = isOuting ? '' : 'none';
+      if (hoursOpt) hoursOpt.style.display = isOuting ? 'none' : '';
+      if (endWrap) endWrap.style.display = isOuting ? 'none' : '';
+      if (startLabel) startLabel.textContent = isOuting ? '외출 일자' : '시작일';
+      if (isOuting && startInp && endInp) {
+        endInp.value = startInp.value;
+        endInp.removeAttribute('required');
+      } else if (endInp) {
+        endInp.setAttribute('required', 'required');
+      }
+      syncOutingHours();
+    }
+
+    kindSel.addEventListener('change', syncLeaveKind);
+    if (outingSel) outingSel.addEventListener('change', syncOutingHours);
+    if (startInp) startInp.addEventListener('change', function() {
+      if (kindSel.value === '외출' && endInp) endInp.value = startInp.value;
+    });
+    syncLeaveKind();
   }
 
   function populateRegionSelect(selectEl, regions, selectedId) {
@@ -491,6 +647,14 @@
 
   docTypeSelect.addEventListener("change", (e) => {
     updateForm(e.target.value);
+  });
+
+  document.getElementById("doc_form").addEventListener("submit", (e) => {
+    const opt = docTypeSelect.selectedOptions[0];
+    if (opt && opt.disabled) {
+      e.preventDefault();
+      alert(opt.title || "선택한 문서 유형은 지금 작성할 수 없습니다.");
+    }
   });
 
   updateForm(docTypeSelect.value);

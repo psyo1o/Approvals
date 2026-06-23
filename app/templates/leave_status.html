@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .leave-filter {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+    margin-bottom: 18px; padding: 14px; background: #f8fafc;
+    border-radius: 10px; border: 1px solid var(--border);
+  }
+  .leave-filter label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #374151; }
+  .leave-filter .field { min-width: 120px; }
+  .summary-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 18px;
+  }
+  .summary-card {
+    padding: 14px 16px; border-radius: 10px; border: 1px solid var(--border); background: #fff;
+  }
+  .summary-card .lbl { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .summary-card .val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .summary-card.primary .val { color: #1d4ed8; }
+  .leave-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .leave-table th {
+    background: #f1f5f9; text-align: left; padding: 10px 8px;
+    border-bottom: 2px solid var(--border); white-space: nowrap;
+  }
+  .leave-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .leave-table tr:hover { background: #f8fafc; }
+  .leave-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .leave-table .strong { font-weight: 700; color: #1d4ed8; }
+  .leave-table tfoot td { font-weight: 700; background: #f8fafc; }
+  .detail-list { margin: 0; padding-left: 16px; font-size: 12px; color: #4b5563; }
+  .detail-list li { margin: 2px 0; }
+  .hint-box {
+    font-size: 13px; color: var(--muted); margin-bottom: 14px;
+    padding: 10px 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+  }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+    <div>
+      <h2 style="margin:0;">휴가·연차 조회{% if branch_label %} <span class="muted" style="font-size:16px;font-weight:600;">· {{ branch_label }}</span>{% endif %}</h2>
+      <p class="muted" style="margin:4px 0 0 0;">{{ year_label }} 기준 · 승인 완료 휴가신청 집계</p>
+    </div>
+    <a class="btn ghost" href="/calendar">일정 캘린더 →</a>
+  </div>
+
+  <div class="hint-box">
+    <strong>연차사용</strong> = 연차 일수 + 반차 0.5일 + <strong>외출</strong>({{ work_day_hours }}시간 근무 = 연차 1일,
+    기본 {{ outing_unit_minutes }}분/회, 하루 최대 {{ outing_blocks_per_day }}회분).
+    휴가 기간이 해당 연도와 겹치는 승인 건만 포함합니다.
+  </div>
+
+  <form method="get" action="/leave/status" class="leave-filter">
+    <div class="field">
+      <label for="leave_year">기준 연도</label>
+      <input type="number" name="year" id="leave_year" min="2000" max="2100" value="{{ year }}" style="width:100px;">
+    </div>
+    {% if branches %}
+    <div class="field">
+      <label for="leave_branch">조회 지사</label>
+      <select name="branch_id" id="leave_branch">
+        {% for b in branches %}
+        <option value="{{ b.id }}" {% if branch_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <button type="submit" class="btn primary">조회</button>
+  </form>
+
+  <div class="summary-grid">
+    <div class="summary-card primary">
+      <div class="lbl">지사 연차 사용 합계</div>
+      <div class="val">{{ "%.1f"|format(totals.annual_equiv) }}일</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">연차</div>
+      <div class="val">{{ "%.1f"|format(totals.annual) }}일</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">반차</div>
+      <div class="val">{{ "%.1f"|format(totals.half) }}일</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">외출 (연차 환산 포함)</div>
+      <div class="val">{{ "%.0f"|format(totals.outing_minutes) }}분</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">병가 / 공가 / 기타</div>
+      <div class="val">{{ "%.1f"|format(totals.sick) }} / {{ "%.1f"|format(totals.official) }} / {{ "%.1f"|format(totals.other) }}</div>
+    </div>
+    {% if pending_total > 0 %}
+    <div class="summary-card">
+      <div class="lbl">결재중(해당 연도)</div>
+      <div class="val">{{ pending_total }}건</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="table-responsive">
+    <table class="leave-table">
+      <thead>
+        <tr>
+          <th>이름</th>
+          <th>부서</th>
+          <th>직급</th>
+          <th class="num">연차사용</th>
+          <th class="num">연차</th>
+          <th class="num">반차</th>
+          <th class="num">외출(분)</th>
+          <th class="num">병가</th>
+          <th class="num">공가</th>
+          <th class="num">기타</th>
+          <th class="num">결재중</th>
+          <th>내역</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><strong>{{ r.name }}</strong></td>
+          <td>{{ r.dept or '-' }}</td>
+          <td>{{ r.grade or '-' }}</td>
+          <td class="num strong">{% if r.annual_equiv > 0 %}{{ "%.1f"|format(r.annual_equiv) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.annual > 0 %}{{ "%.1f"|format(r.units.annual) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.half > 0 %}{{ "%.1f"|format(r.units.half) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.outing_minutes > 0 %}{{ "%.0f"|format(r.units.outing_minutes) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.sick > 0 %}{{ "%.1f"|format(r.units.sick) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.official > 0 %}{{ "%.1f"|format(r.units.official) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.units.other > 0 %}{{ "%.1f"|format(r.units.other) }}{% else %}-{% endif %}</td>
+          <td class="num">{% if r.pending_count > 0 %}{{ r.pending_count }}{% else %}-{% endif %}</td>
+          <td>
+            {% if r.records %}
+            <ul class="detail-list">
+              {% for rec in r.records %}
+              <li>
+                <a href="/doc/{{ rec.doc_id }}">{{ rec.leave_kind }}</a>
+                {{ rec.leave_start }}{% if rec.leave_end and rec.leave_end != rec.leave_start %}~{{ rec.leave_end }}{% endif %}
+                {% if rec.leave_hours %} {{ rec.leave_hours }}{% endif %}
+                {% if rec.annual_equiv > 0 %}(연차환산 {{ "%.2f"|format(rec.annual_equiv) }}일){% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <span class="muted">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="12" class="muted" style="text-align:center;padding:24px;">활성 직원이 없습니다.</td></tr>
+        {% endfor %}
+      </tbody>
+      {% if rows %}
+      <tfoot>
+        <tr>
+          <td colspan="3">지사 합계</td>
+          <td class="num strong">{{ "%.1f"|format(totals.annual_equiv) }}</td>
+          <td class="num">{{ "%.1f"|format(totals.annual) }}</td>
+          <td class="num">{{ "%.1f"|format(totals.half) }}</td>
+          <td class="num">{{ "%.0f"|format(totals.outing_minutes) }}</td>
+          <td class="num">{{ "%.1f"|format(totals.sick) }}</td>
+          <td class="num">{{ "%.1f"|format(totals.official) }}</td>
+          <td class="num">{{ "%.1f"|format(totals.other) }}</td>
+          <td class="num">{{ pending_total if pending_total > 0 else '-' }}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+{% endblock %}

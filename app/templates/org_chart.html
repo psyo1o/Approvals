@@ -1,39 +1,76 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="row items-center mb-6" style="display: flex; justify-content: space-between; align-items: center;">
-  <h2 style="margin: 0;">사내 조직도</h2>
+<style>
+  .org-page-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 1.5rem; }
+  .org-branch-block { margin-bottom: 2.5rem; }
+  .org-branch-head {
+    display: flex; align-items: center; gap: 12px;
+    margin: 0 0 1rem 0; padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--primary);
+  }
+  .org-branch-head h2 { margin: 0; font-size: 1.25rem; }
+  .org-branch-code {
+    font-size: 0.8rem; font-weight: 600; color: #1e40af;
+    background: #eff6ff; border: 1px solid #bfdbfe;
+    border-radius: 999px; padding: 2px 10px;
+  }
+  .org-dept-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+  }
+</style>
+
+<div class="org-page-head">
+  <div>
+    <h2 style="margin: 0;">사내 조직도</h2>
+    <p class="muted small" style="margin: 4px 0 0;">전 지사 통합 · 지사별 → 부서별 (직급 순)</p>
+  </div>
 </div>
 
-<div class="grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
-  {% for dept, users in org_dict.items() %}
-  <div class="card p-0" style="overflow: hidden;">
-    <div style="background: #f8fafc; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
-      <h3 style="margin: 0; color: var(--primary);">{{ dept }}</h3>
-      <span style="background: var(--primary); color: white; border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; font-weight: bold;">{{ users|length }}</span>
-    </div>
-    <table class="table" style="width: 100%; border-collapse: collapse; text-align: left;">
-      <tbody>
-        {% for u in users|sort(attribute='grade') %}
-        <tr style="border-bottom: 1px solid var(--border);">
-          <td style="padding: 1rem 1.5rem;">
-            <div style="display: flex; align-items: center; justify-content: space-between;">
-              <div style="display: flex; align-items: center; gap: 0.75rem;">
-                <div style="width: 32px; height: 32px; background: #e2e8f0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: var(--muted);">
-                  {{ u.name[0] if u.name else '?' }}
+{% if not org_sections %}
+<p class="muted">표시할 활성 사용자가 없습니다.</p>
+{% endif %}
+
+{% for section in org_sections %}
+<section class="org-branch-block" aria-label="{{ section.branch.name }}">
+  <header class="org-branch-head">
+    <h2>{{ section.branch.name }}</h2>
+    {% if section.branch.code %}
+    <span class="org-branch-code">{{ section.branch.code }}</span>
+    {% endif %}
+    {% set ns = namespace(n=0) %}
+    {% for d in section.depts %}{% set ns.n = ns.n + d.users|length %}{% endfor %}
+    <span class="muted small">{{ ns.n }}명</span>
+  </header>
+
+  <div class="org-dept-grid">
+    {% for dept in section.depts %}
+    <div class="card p-0" style="overflow: hidden;">
+      <div style="background: #f8fafc; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+        <h3 style="margin: 0; color: var(--primary);">{{ dept.name }}</h3>
+        <span style="background: var(--primary); color: white; border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; font-weight: bold;">{{ dept.users|length }}</span>
+      </div>
+      <table class="table" style="width: 100%; border-collapse: collapse; text-align: left;">
+        <tbody>
+          {% for u in dept.users %}
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 1rem 1.5rem;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                  <div style="width: 32px; height: 32px; background: #e2e8f0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: var(--muted);">
+                    {{ u.name[0] if u.name else '?' }}
+                  </div>
+                  <div>
+                    <div style="font-weight: 500; font-size: 1rem; color: var(--text);">{{ u.name }}</div>
+                    <div style="font-size: 0.85rem; color: var(--muted); margin-top: 0.1rem;">{{ u.grade or '직급 미지정' }}</div>
+                  </div>
                 </div>
                 <div>
-                  <div style="font-weight: 500; font-size: 1rem; color: var(--text);">{{ u.name }}</div>
-                  <div style="font-size: 0.85rem; color: var(--muted); margin-top: 0.1rem;">{{ u.grade }}</div>
-                </div>
-              </div>
-              <div>
-                <!-- 쪽지 보내기 버튼 (내 자신에게는 보내지 않음) -->
-                {% if u.id != me.id %}
+                  {% if u.id != me.id %}
                   <button onclick="document.getElementById('msgFormModal_{{ u.id }}').style.display='flex'" class="btn ghost btn-sm" title="쪽지 보내기">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12 13 2,6"></polyline></svg>
                   </button>
-                  
-                  <!-- 쪽지 모달 -->
                   <div id="msgFormModal_{{ u.id }}" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center;">
                     <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; position: relative; z-index: 1001;">
                       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
@@ -56,24 +93,24 @@
                       </form>
                     </div>
                   </div>
-                {% endif %}
+                  {% endif %}
+                </div>
               </div>
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
   </div>
-  {% endfor %}
-</div>
+</section>
+{% endfor %}
 
 <script>
-// ESC 눌렀을 때 모든 모달 닫기
 document.addEventListener('keydown', function(event) {
   if (event.key === "Escape") {
-    const modals = document.querySelectorAll('div[id^="msgFormModal_"]');
-    modals.forEach(modal => {
+    document.querySelectorAll('div[id^="msgFormModal_"]').forEach(function(modal) {
       modal.style.display = 'none';
     });
   }

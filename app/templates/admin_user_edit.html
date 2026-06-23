@@ -35,7 +35,17 @@
           <input name="name" value="{{ u.name }}" required>
         </label>
         <label class="field-block">부서
-          <input name="dept" value="{{ u.dept or '' }}" placeholder="부서명">
+          <select name="dept_id">
+            <option value="">(선택)</option>
+            {% for d in depts %}
+            <option value="{{ d.id }}" {% if u.dept == d.name %}selected{% endif %}>{{ d.name }}</option>
+            {% endfor %}
+          </select>
+          {% if u.dept and not depts|selectattr('name', 'equalto', u.dept)|list %}
+          <small class="muted">현재 DB값: {{ u.dept }} (목록에 없음 — <a href="/admin/depts">부서 관리</a>에서 등록)</small>
+          {% else %}
+          <small class="muted">추가: <a href="/admin/depts">부서 관리</a></small>
+          {% endif %}
         </label>
         <label class="field-block">직급
           <select name="grade_id">
@@ -44,7 +54,18 @@
             <option value="{{ g.id }}" {% if u.grade == g.name %}selected{% endif %}>{{ g.name }}</option>
             {% endfor %}
           </select>
-          <input name="grade" value="{{ u.grade or '' }}" placeholder="직접 입력" style="margin-top:6px;">
+          {% if u.grade and not grades|selectattr('name', 'equalto', u.grade)|list %}
+          <small class="muted">현재 DB값: {{ u.grade }} (목록에 없음 — <a href="/admin/grades">직급 관리</a>에서 등록)</small>
+          {% else %}
+          <small class="muted">추가: <a href="/admin/grades">직급 관리</a></small>
+          {% endif %}
+        </label>
+        <label class="field-block">소속 지사
+          <select name="branch_id">
+            {% for b in branches %}
+            <option value="{{ b.id }}" {% if u.branch_id == b.id %}selected{% endif %}>{{ b.name }} ({{ b.code }})</option>
+            {% endfor %}
+          </select>
         </label>
         <label class="field-block">관리자
           <select name="is_admin">

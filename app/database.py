@@ -97,7 +97,11 @@ _DEFAULT_REGION_NAMES = ("원주", "제천", "단양")
 
 
 def _seed_default_regions(conn: Connection, eng: Engine) -> None:
+    """레거시: branch_id 없는 구 DB만 1회 시드."""
     if not _ensure_table_exists(conn, eng, "regions"):
+        return
+    cols = _table_columns(conn, eng, "regions")
+    if "branch_id" in cols:
         return
     count = conn.execute(text("SELECT COUNT(*) FROM regions")).scalar() or 0
     if count > 0:
@@ -105,6 +109,64 @@ def _seed_default_regions(conn: Connection, eng: Engine) -> None:
     for name in _DEFAULT_REGION_NAMES:
         conn.execute(text("INSERT INTO regions (name) VALUES (:name)"), {"name": name})
     print(f"[migrate] seeded {len(_DEFAULT_REGION_NAMES)} default regions")
+
+
+def _migrate_regions_multibranch(conn: Connection, eng: Engine) -> None:
+    """regions.name 전역 UNIQUE → (branch_id, name) 복합 UNIQUE."""
+    if not _ensure_table_exists(conn, eng, "regions"):
+        return
+    cols = _table_columns(conn, eng, "regions")
+    if "branch_id" in cols:
+        _seed_regions_per_branch(conn, eng)
+        return
+    if _is_sqlite(eng):
+        conn.execute(
+            text(
+                "CREATE TABLE regions_new ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name VARCHAR(50) NOT NULL, "
+                "branch_id INTEGER NOT NULL DEFAULT 1, "
+                "UNIQUE (branch_id, name))"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO regions_new (id, name, branch_id) "
+                "SELECT id, name, 1 FROM regions"
+            )
+        )
+        conn.execute(text("DROP TABLE regions"))
+        conn.execute(text("ALTER TABLE regions_new RENAME TO regions"))
+        print("[migrate] regions table rebuilt with branch_id")
+    else:
+        _ensure_column(conn, eng, "regions", "branch_id", "INTEGER NOT NULL DEFAULT 1")
+        conn.execute(text("UPDATE regions SET branch_id = 1 WHERE branch_id IS NULL"))
+    _seed_regions_per_branch(conn, eng)
+
+
+def _seed_regions_per_branch(conn: Connection, eng: Engine) -> None:
+    if not _ensure_table_exists(conn, eng, "regions"):
+        return
+    if "branch_id" not in _table_columns(conn, eng, "regions"):
+        return
+    added = 0
+    for bid in (1, 2):
+        for name in _DEFAULT_REGION_NAMES:
+            row = conn.execute(
+                text(
+                    "SELECT 1 FROM regions WHERE name = :n AND branch_id = :b LIMIT 1"
+                ),
+                {"n": name, "b": bid},
+            ).fetchone()
+            if row:
+                continue
+            conn.execute(
+                text("INSERT INTO regions (name, branch_id) VALUES (:n, :b)"),
+                {"n": name, "b": bid},
+            )
+            added += 1
+    if added:
+        print(f"[migrate] seeded {added} region rows (per branch)")
 
 
 def run_schema_migration(model_base: Type[Any]) -> None:
@@ -134,6 +196,7 @@ def run_schema_migration(model_base: Type[Any]) -> None:
             ec("documents", "overtime_start", "TEXT DEFAULT ''")
             ec("documents", "overtime_end", "TEXT DEFAULT ''")
             ec("documents", "overtime_reason", "TEXT DEFAULT ''")
+            ec("documents", "work_hours", "TEXT DEFAULT ''")
             ec("documents", "cert_type", "TEXT DEFAULT ''")
             ec("documents", "cert_usage", "TEXT DEFAULT ''")
 
@@ -147,6 +210,21 @@ def run_schema_migration(model_base: Type[Any]) -> None:
 
             ec("grades", "level", "INTEGER DEFAULT 1")
             ec("grades", "is_active", "INTEGER DEFAULT 1")
+
+            if not _ensure_table_exists(conn, engine, "departments"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE departments ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "name VARCHAR(120) NOT NULL UNIQUE, "
+                        "sort_order INTEGER NOT NULL DEFAULT 1, "
+                        "is_active INTEGER DEFAULT 1)"
+                    )
+                )
+                print("[migrate] created departments table")
+            else:
+                ec("departments", "sort_order", "INTEGER DEFAULT 1")
+                ec("departments", "is_active", "INTEGER DEFAULT 1")
 
             if _ensure_table_exists(conn, engine, "attachments"):
                 ec("attachments", "uploader_id", "INTEGER")
@@ -164,6 +242,18 @@ def run_schema_migration(model_base: Type[Any]) -> None:
                 ec("schedules", "color", "TEXT DEFAULT ''")
                 ec("schedules", "memo", "TEXT DEFAULT ''")
                 ec("schedules", "document_id", "INTEGER")
+                ec("schedules", "schedule_type", "TEXT NOT NULL DEFAULT 'COMPANY'")
+                ec("schedules", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
+                if "schedule_type" in _table_columns(conn, engine, "schedules"):
+                    conn.execute(
+                        text(
+                            "UPDATE schedules SET schedule_type = 'LEAVE' "
+                            "WHERE document_id IS NOT NULL AND schedule_type = 'COMPANY' "
+                            "AND document_id IN ("
+                            "  SELECT id FROM documents WHERE doc_type = 'LEAVE'"
+                            ")"
+                        )
+                    )
 
             if _ensure_table_exists(conn, engine, "worklogs"):
                 ec("worklogs", "work_date", "TEXT DEFAULT ''")
@@ -188,8 +278,102 @@ def run_schema_migration(model_base: Type[Any]) -> None:
                 ec("collections", "amount", "INTEGER DEFAULT 0")
                 ec("collections", "collection_date", "TEXT DEFAULT ''")
                 ec("collections", "note", "TEXT DEFAULT ''")
+                ec("collections", "branch_id", "INTEGER DEFAULT 1")
+                conn.execute(
+                    text("UPDATE collections SET branch_id = 1 WHERE branch_id IS NULL")
+                )
 
             _seed_default_regions(conn, engine)
+
+            # Phase 7 — 지사(Branch)
+            if not _ensure_table_exists(conn, engine, "branches"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE branches ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "name VARCHAR(120) NOT NULL, "
+                        "code VARCHAR(20) NOT NULL UNIQUE, "
+                        "is_headquarters INTEGER DEFAULT 0)"
+                    )
+                )
+                print("[migrate] created branches table")
+            for bid, bname, bcode, hq in (
+                (1, "원주본사", "WJ", 1),
+                (2, "제천지사", "JC", 0),
+            ):
+                conn.execute(
+                    text(
+                        "INSERT OR IGNORE INTO branches (id, name, code, is_headquarters) "
+                        "VALUES (:id, :name, :code, :hq)"
+                    ),
+                    {"id": bid, "name": bname, "code": bcode, "hq": hq},
+                )
+
+            ec("users", "branch_id", "INTEGER DEFAULT 1")
+            ec("documents", "branch_id", "INTEGER DEFAULT 1")
+            if _ensure_table_exists(conn, engine, "quality_docs"):
+                ec("quality_docs", "branch_id", "INTEGER DEFAULT 1")
+
+            if _ensure_table_exists(conn, engine, "users"):
+                conn.execute(text("UPDATE users SET branch_id = 1 WHERE branch_id IS NULL"))
+            if _ensure_table_exists(conn, engine, "documents"):
+                conn.execute(text("UPDATE documents SET branch_id = 1 WHERE branch_id IS NULL"))
+            if _ensure_table_exists(conn, engine, "quality_docs"):
+                conn.execute(text("UPDATE quality_docs SET branch_id = 1 WHERE branch_id IS NULL"))
+
+            if not _ensure_table_exists(conn, engine, "work_schedule_entries"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE work_schedule_entries ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_id INTEGER NOT NULL, "
+                        "branch_id INTEGER NOT NULL DEFAULT 1, "
+                        "work_date TEXT NOT NULL, "
+                        "early_hours REAL NOT NULL DEFAULT 0, "
+                        "overtime_hours REAL NOT NULL DEFAULT 0, "
+                        "weekend_hours REAL NOT NULL DEFAULT 0, "
+                        "note TEXT DEFAULT '', "
+                        "is_day_off INTEGER DEFAULT 0, "
+                        "off_reason TEXT DEFAULT '', "
+                        "source_doc_id INTEGER, "
+                        "updated_at TEXT DEFAULT (datetime('now')), "
+                        "UNIQUE(user_id, work_date))"
+                    )
+                )
+                print("[migrate] created work_schedule_entries table")
+            elif _ensure_table_exists(conn, engine, "work_schedule_entries"):
+                ec("work_schedule_entries", "is_day_off", "INTEGER DEFAULT 0")
+                ec("work_schedule_entries", "off_reason", "TEXT DEFAULT ''")
+
+            if not _ensure_table_exists(conn, engine, "work_timesheet_months"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE work_timesheet_months ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_id INTEGER NOT NULL, "
+                        "branch_id INTEGER NOT NULL DEFAULT 1, "
+                        "year_month TEXT NOT NULL, "
+                        "status TEXT NOT NULL DEFAULT 'DRAFT', "
+                        "doc_id INTEGER, "
+                        "updated_at TEXT DEFAULT (datetime('now')), "
+                        "UNIQUE(user_id, year_month))"
+                    )
+                )
+                print("[migrate] created work_timesheet_months table")
+
+            _migrate_regions_multibranch(conn, engine)
+
+            if not _ensure_table_exists(conn, engine, "schedule_trip_members"):
+                conn.execute(
+                    text(
+                        "CREATE TABLE schedule_trip_members ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "schedule_id INTEGER NOT NULL, "
+                        "user_id INTEGER NOT NULL, "
+                        "UNIQUE (schedule_id, user_id))"
+                    )
+                )
+                print("[migrate] created schedule_trip_members table")
 
             conn.execute(
                 text("UPDATE documents SET status = 'APPROVED_FINAL' WHERE status = 'APPROVED'")

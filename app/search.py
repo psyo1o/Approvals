@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, List, Optional, Sequence, Type
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
+
+try:
+    from branch_scope import document_visible_clause_for_search
+except ImportError:
+    from app.branch_scope import document_visible_clause_for_search
 
 SEARCH_MIN_LEN = 2
 SEARCH_LIMIT = 20
@@ -58,35 +63,6 @@ def _delegator_ids(db: Session, user_cls: Type[Any], user_id: int) -> List[int]:
     return [int(r[0]) for r in rows]
 
 
-def _document_visible_clause(
-    dialect_name: str,
-    document_cls: Type[Any],
-    approver_cls: Type[Any],
-    user_id: int,
-    is_admin: bool,
-    delegator_ids: Sequence[int],
-) -> Any:
-    if is_admin:
-        return document_cls.is_deleted == False
-    own = document_cls.creator_id == user_id
-    as_approver = exists(
-        select(1).where(
-            approver_cls.doc_id == document_cls.id,
-            approver_cls.approver_id == user_id,
-        )
-    )
-    parts = [own, as_approver]
-    if delegator_ids:
-        as_delegate = exists(
-            select(1).where(
-                approver_cls.doc_id == document_cls.id,
-                approver_cls.approver_id.in_(list(delegator_ids)),
-            )
-        )
-        parts.append(as_delegate)
-    return (document_cls.is_deleted == False) & or_(*parts)
-
-
 def _text_match_clause(dialect_name: str, q: str, *columns: Any) -> Any:
     pattern = _like_pattern(q)
     return or_(*[_col_ilike(dialect_name, col, pattern) for col in columns])
@@ -124,10 +100,19 @@ def _search_documents(
     user_cls: Type[Any],
     status_ko: Callable[[str], str],
     doctype_ko: Callable[[str], str],
+    *,
+    view_branch_id: Optional[int] = None,
 ) -> List[SearchHit]:
     delegators = _delegator_ids(db, user_cls, int(user.id))
-    vis = _document_visible_clause(
-        dialect_name, document_cls, approver_cls, int(user.id), bool(user.is_admin), delegators
+    vis = document_visible_clause_for_search(
+        dialect_name,
+        document_cls,
+        approver_cls,
+        user_cls,
+        user,
+        int(user.id),
+        delegators,
+        view_branch_id=view_branch_id,
     )
     match = _text_match_clause(dialect_name, q, document_cls.title, document_cls.body)
     rows = (
@@ -200,10 +185,19 @@ def _search_attachments(
     document_cls: Type[Any],
     approver_cls: Type[Any],
     user_cls: Type[Any],
+    *,
+    view_branch_id: Optional[int] = None,
 ) -> List[SearchHit]:
     delegators = _delegator_ids(db, user_cls, int(user.id))
-    vis = _document_visible_clause(
-        dialect_name, document_cls, approver_cls, int(user.id), bool(user.is_admin), delegators
+    vis = document_visible_clause_for_search(
+        dialect_name,
+        document_cls,
+        approver_cls,
+        user_cls,
+        user,
+        int(user.id),
+        delegators,
+        view_branch_id=view_branch_id,
     )
     pattern = _like_pattern(q)
     fname_match = _col_ilike(dialect_name, attachment_cls.filename, pattern)
@@ -245,6 +239,7 @@ def run_search(
     attachment_cls: Type[Any],
     status_ko: Callable[[str], str],
     doctype_ko: Callable[[str], str],
+    view_branch_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """통합 검색 실행. tab: all | document | post | attachment."""
     query = _normalize_query(q)
@@ -275,6 +270,7 @@ def run_search(
         documents = _search_documents(
             db, dialect_name, user, query, SEARCH_LIMIT,
             document_cls, approver_cls, user_cls, status_ko, doctype_ko,
+            view_branch_id=view_branch_id,
         )
     if tab_key in ("all", "post"):
         posts = _search_posts(db, dialect_name, query, SEARCH_LIMIT, post_cls, board_cls, user_cls)
@@ -282,6 +278,7 @@ def run_search(
         attachments = _search_attachments(
             db, dialect_name, user, query, SEARCH_LIMIT,
             attachment_cls, document_cls, approver_cls, user_cls,
+            view_branch_id=view_branch_id,
         )
 
     counts = {

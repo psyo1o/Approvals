@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .ws-filter { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:16px;
+    padding:14px; background:#f8fafc; border-radius:10px; border:1px solid var(--border); }
+  .ws-nav { display:flex; gap:8px; align-items:center; }
+  .ws-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .ws-table th, .ws-table td { border:1px solid var(--border); padding:6px 8px; vertical-align:top; }
+  .ws-table th { background:#f1f5f9; white-space:nowrap; }
+  .ws-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .ws-over { background:#fef2f2 !important; }
+  .ws-off { background:#f1f5f9 !important; color:#64748b; }
+  .ws-week-total { font-weight:700; }
+  .ws-over .ws-week-total { color:#dc2626; }
+  .ws-payroll { background:#fffbeb; font-weight:600; }
+  .ws-edit-form { display:grid; grid-template-columns:repeat(auto-fill,minmax(72px,1fr)); gap:6px; }
+  .ws-edit-form input, .ws-edit-form select { width:100%; font-size:12px; padding:4px 6px; }
+  .ws-edit-form label { font-size:10px; color:var(--muted); display:block; }
+  .hint-box { font-size:13px; padding:10px 12px; background:#eff6ff; border:1px solid #bfdbfe;
+    border-radius:8px; margin-bottom:14px; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+    <div>
+      <h2 style="margin:0;">근무표{% if branch_label %} · {{ branch_label }}{% endif %}</h2>
+      <p class="muted" style="margin:4px 0 0 0;">평일 {{ base_day_hours }}h · 주 {{ weekly_max_hours }}h · 이사 이상 제외 · 휴무·휴가·공휴일은 기본시간 제외</p>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <a class="btn ghost" href="/leave/status">휴가·연차 →</a>
+      <a class="btn ghost" href="/doc/new?doc_type=OVERTIME">연장근무 신청</a>
+      <a class="btn ghost" href="/doc/new?doc_type=EARLY_ARRIVAL">조기출근</a>
+      <a class="btn ghost" href="/doc/new?doc_type=WEEKEND_WORK">주말근무</a>
+    </div>
+  </div>
+
+  {% if flash %}<div class="alert" style="margin-bottom:12px;">{{ flash }}</div>{% endif %}
+
+  <div class="hint-box">
+    <strong>수당 집계</strong> — 주간 <strong>조기+연장</strong>·<strong>주말</strong> 합계 열 참고 ·
+    승인 휴가·일정은 자동 <strong>휴무</strong> 표시(기본 8.5h 미포함) ·
+    휴무·공휴일은 편집에서 직접 지정 ·
+    결재: 근무표(월) <strong>담당→부서장→감사</strong> · 조기·연장·주말 <strong>담당→이사→대표</strong>
+  </div>
+
+  <form method="get" action="/work-schedule" class="ws-filter">
+    <div class="ws-nav">
+      <a class="btn ghost btn-sm" href="/work-schedule?week={{ prev_week }}{% if branches %}&branch_id={{ branch_id }}{% endif %}">◀ 이전 주</a>
+      <strong>{{ week_monday }} ~ {{ week_sunday }}</strong>
+      <a class="btn ghost btn-sm" href="/work-schedule?week={{ next_week }}{% if branches %}&branch_id={{ branch_id }}{% endif %}">다음 주 ▶</a>
+    </div>
+    <input type="hidden" name="week" value="{{ week_monday }}">
+    {% if branches %}
+    <div>
+      <label>조회 지사</label>
+      <select name="branch_id">
+        {% for b in branches %}
+        <option value="{{ b.id }}" {% if branch_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <button type="submit" class="btn primary btn-sm">조회</button>
+  </form>
+
+  <form method="post" action="/work-schedule/month/submit" style="margin-bottom:18px; padding:12px; background:#fffbeb; border:1px solid #fde68a; border-radius:8px;">
+    <input type="hidden" name="week" value="{{ week_monday }}">
+    <strong>월간 근무표 결재</strong> — {{ year_month }}월
+    {% if timesheet_month and timesheet_month.doc_id %}
+      <span class="muted"> (문서 #{{ timesheet_month.doc_id }}, {{ timesheet_month.status }})</span>
+      <a class="btn ghost btn-sm" href="/doc/{{ timesheet_month.doc_id }}">결재 문서 보기</a>
+    {% else %}
+      <button type="submit" class="btn primary btn-sm" style="margin-left:8px;"
+        onclick="return confirm('{{ year_month }}월 근무표를 결재 상신할까요? 결재선을 선택합니다.');">
+        {{ year_month }}월 근무표 상신
+      </button>
+    {% endif %}
+    <div class="muted small" style="margin-top:6px;">상신 전 주차별 52시간 확인. 결재선: <strong>담당 → 부서장 → 감사</strong></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="ws-table">
+      <thead>
+        <tr>
+          <th>직원</th>
+          <th>부서</th>
+          {% if schedule_rows and schedule_rows[0].days %}
+          {% for day in schedule_rows[0].days %}
+          <th class="num">{{ day.date[5:] }}<br>{{ day.weekday }}</th>
+          {% endfor %}
+          {% else %}
+          {% for dk in week_dates %}
+          <th class="num">{{ dk[5:] }}</th>
+          {% endfor %}
+          {% endif %}
+          <th class="num ws-payroll" title="조기출근+연장근무">조기+연장</th>
+          <th class="num ws-payroll" title="주말근무">주말</th>
+          <th class="num">주52h</th>
+          <th>수정</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in schedule_rows %}
+        <tr class="{% if row.over_52 %}ws-over{% endif %}">
+          <td><strong>{{ row.user.name }}</strong></td>
+          <td>{{ row.user.dept or '-' }}</td>
+          {% for day in row.days %}
+          <td class="num {% if day.is_off %}ws-off{% endif %}" title="{{ day.note }}{% if day.off_label %} · {{ day.off_label }}{% endif %}">
+            {% if day.is_off %}
+            <div><strong>{{ day.off_label or '휴무' }}</strong></div>
+            {% elif day.total > 0 or day.early_hours or day.overtime_hours or day.weekend_hours %}
+            <div>{{ "%.1f"|format(day.total) }}</div>
+            <div class="muted" style="font-size:10px;">
+              {% if day.early_hours %}조{{ "%.1f"|format(day.early_hours) }}{% endif %}
+              {% if day.overtime_hours %}연{{ "%.1f"|format(day.overtime_hours) }}{% endif %}
+              {% if day.weekend_hours %}주{{ "%.1f"|format(day.weekend_hours) }}{% endif %}
+            </div>
+            {% else %}—{% endif %}
+          </td>
+          {% endfor %}
+          <td class="num ws-payroll">{{ "%.1f"|format(row.payroll.early_overtime) }}h</td>
+          <td class="num ws-payroll">{{ "%.1f"|format(row.payroll.weekend) }}h</td>
+          <td class="num ws-week-total">{{ "%.1f"|format(row.week_total) }}{% if row.over_52 %} ⚠{% endif %}</td>
+          <td>
+            {% if row.can_edit %}
+            <details>
+              <summary class="btn ghost btn-sm" style="cursor:pointer;">편집</summary>
+              <form method="post" action="/work-schedule/save" style="margin-top:8px;">
+                <input type="hidden" name="user_id" value="{{ row.user_id }}">
+                <input type="hidden" name="week" value="{{ week_monday }}">
+                <label class="small">일자</label>
+                <input type="date" name="work_date" value="{{ week_monday }}" required>
+                <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;">
+                  <input type="checkbox" name="is_day_off" value="1" id="off-{{ row.user_id }}">
+                  휴무 (휴가·공휴일 — 기본시간·조기·연장·주말 미집계)
+                </label>
+                <div id="off-reason-{{ row.user_id }}" style="display:none;margin-top:4px;">
+                  <label class="small">사유</label>
+                  <select name="off_reason">
+                    {% for r in off_reasons %}
+                    <option value="{{ r }}">{{ r }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="ws-edit-form ws-hours-{{ row.user_id }}" style="margin-top:6px;">
+                  <div><label>조기(h)</label><input name="early_hours" type="number" step="0.5" min="0" placeholder="0"></div>
+                  <div><label>연장(h)</label><input name="overtime_hours" type="number" step="0.5" min="0" placeholder="0"></div>
+                  <div><label>주말(h)</label><input name="weekend_hours" type="number" step="0.5" min="0" placeholder="0"></div>
+                </div>
+                <input name="note" placeholder="비고" style="margin-top:6px; width:100%;">
+                <button type="submit" class="btn primary btn-sm" style="margin-top:6px;">저장</button>
+              </form>
+              <script>
+                (function(){
+                  var cb = document.getElementById('off-{{ row.user_id }}');
+                  var rr = document.getElementById('off-reason-{{ row.user_id }}');
+                  var hrs = document.querySelector('.ws-hours-{{ row.user_id }}');
+                  if (!cb) return;
+                  function sync(){ var on = cb.checked; rr.style.display = on ? 'block' : 'none'; hrs.style.opacity = on ? '0.4' : '1'; }
+                  cb.addEventListener('change', sync);
+                })();
+              </script>
+            </details>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="12" class="muted" style="text-align:center;padding:20px;">표시할 직원이 없습니다. (이사 이상 직급은 근무표 대상에서 제외됩니다)</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

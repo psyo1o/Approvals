@@ -22,6 +22,7 @@
 | **6.2** | **글로벌 통합 검색** | ✅ 완료 | 2026-05-20 |
 | **6.3** | **부재중 자동 대결** | ✅ 완료 | 2026-05-20 |
 | **6.4** | **PDF 동적 워터마크** | ✅ 완료 | 2026-05-20 |
+| **7** | **멀티 지사 (원주·제천)** | ✅ 완료 | 2026-05-21 |
 
 > **Phase 5.5는 계획에 없음.** 5.1~5.4 + 분기·연별 확장으로 Phase 5 범위 종료.
 
@@ -47,6 +48,69 @@
 | 2026-05-19 | **`docs/REFERENCE.md` 신규** — 전 라우트·상태·DB·관리 API 현황 상세 목록 |
 | 2026-05-19 | **관리 POST API 구현** — 사용자·CSV·직급 CRUD, PW 초기화, flash 메시지 |
 | 2026-05-20 | **Phase 6 완료** — DB 다중 dialect, 세션/IP, `/search`, 자동 대결, PDF 워터마크 |
+| 2026-05-21 | **직급·부서·결재선 확장**: `departments` 마스터, `/admin/depts`, 사용자·`/me` 드롭다운만(수기 입력 제거) |
+| 2026-05-21 | **직급 순서(▲▼)**: `grades.level` 기반 결재 순서, 상신 시 자동 정렬, `GRADE_TIER`(업무일지 동직급 병렬) |
+| 2026-05-21 | **출장복명서**: `TRIP_REPORT_APPROVAL_DEPTS` — 관리팀·측정팀 자동 결재선 |
+| 2026-05-21 | **UI**: 상단 메뉴 조직도 노출 개선(햄버거·줄바꿈), 직급 순서 중복값 정규화 |
+| 2026-05-21 | **Phase 7 완료**: `branches`, `branch_scope.py`, 문서·품질·회계·조직도 지사 격리, 게시판 통합, NAS 2볼륨 |
+
+---
+
+## Phase 7 — 멀티 지사 (원주본사 WJ · 제천지사 JC)
+
+**목표:** 논리적 데이터 격리 — 결재 문서는 지사별 저장·조회, 대표 이상·관리자는 지사 전환 조회, 결재 참여 시 타지사 문서 열람, 게시판·조직도는 통합.
+
+### DB
+
+| 테이블/컬럼 | 내용 |
+|-------------|------|
+| `branches` | id, name, code, is_headquarters |
+| `users.branch_id`, `documents.branch_id`, `quality_docs.branch_id` | 기본 1 백필 |
+| `collections.branch_id` | 수금 지사 |
+| `regions.branch_id` | 지역 마스터 지사별 (`UNIQUE(branch_id, name)`) |
+
+### 결재 문서 — 등록·조회 (업무일지·출장복명서 포함)
+
+| 항목 | 규칙 |
+|------|------|
+| **등록** | 상신 시 `documents.branch_id` = `users.branch_id` (WORK_LOG, TRIP_REPORT, LEAVE, GENERAL 등 **전 doc_type 동일**) |
+| **문서번호** | `{유형}-{지사코드}-{YYMM}-{순번}` (`allocate_doc_no`) |
+| **목록·대시보드·검색(문서)** | `resolve_view_branch_id` — 쿠키/쿼리 `view_branch_id`, 없으면 소속 지사. **원주+제천 통합 목록 없음** |
+| **가시 범위** | `visible_document_ids`: (1) **조회 지사** 문서 (2) 본인 결재선·대결 위임 타지사 문서 (3) 본인 작성 문서 |
+| **조회 지사 전환** | `is_admin` **또는** 원주본사(`is_headquarters`) 소속 + 「대표」 이상. **제천 대표 제외**, `POST /branch-view` |
+| **업무일지** | 저장 시 `APPROVED_FINAL` / `RECORD` — **결재선 없음** |
+| **출장복명서 작성** | 부서 접두사 기본 `관리,측정` (관리팀·측정팀 포함) |
+| **레거시** | `is_global_view` — 관리자 전 지사 자동 노출 **미사용** |
+
+### 작성 대상 (지사와 무관, `app/doc_requirements.py`)
+
+| 유형 | 규칙 |
+|------|------|
+| 업무일지 | 활성 직원 전원, `WORK_LOG_EXEMPT_GRADES`(기본 관리자 직급)·당일 휴가 제외 |
+| 출장복명서 | `TRIP_REPORT_WRITER_DEPTS` (기본 관리팀·측정팀), `is_admin`만으로는 불가 |
+
+### 모듈·규칙
+
+| 파일 | 역할 |
+|------|------|
+| `app/branch_scope.py` | 가시 문서 ID, 결재 후보, 문서번호, 검색 visible clause, 조회 지사 |
+| `app/doc_requirements.py` | 업무일지·출장복명서 작성/의무 판단 |
+| `app/quality_fs.py` | `nas_root_for_branch()` |
+| `CROSS_BRANCH_REP_GRADE_NAME` | 기본 `대표` — sort_order 이하(숫자 작을수록 높음) = 전 지사 결재 후보·조회 전환 |
+
+### 화면·API
+
+- 헤더 **조회** 드롭다운(전환 권한자), 지사 배지, 사용자 관리·CSV `branch` 컬럼
+- `/api/regions` · 출장 지역: **소속·조회 지사**만
+- 회계: 청구=`Document.branch_id`, 수금=`Collection.branch_id`; 전환 권한자 `?branch_id=` 또는 헤더와 동일 쿠키
+
+### 통합(지사 무관)
+
+- 게시판, 조직도(지사별 섹션), 일정 캘린더(전체 일정 API)
+
+### docker-compose
+
+- `QUALITY_NAS_ROOT_WONJU`, `QUALITY_NAS_ROOT_JECHEON` 볼륨 분리
 
 ---
 

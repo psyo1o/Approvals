@@ -7,7 +7,7 @@ approval_mvp - single-file FastAPI MVP
  관리자: 사용자 추가/CSV 일괄 등록/비번 초기화
  문서: 임시저장(DRAFT) -> 상신(IN_REVIEW)
  결재: 순차(SEQUENTIAL) / 병렬(PARALLEL)
- 작성자/관리자: DRAFT 삭제 가능
+ 작성자/관리자: DRAFT 삭제 가능 · 업무일지는 완료 후에도 작성자/관리자 삭제 가능
  SQLite: /data/app.db (docker-compose에서 ./data:/data 마운트)
 """
 
@@ -18,6 +18,7 @@ import io
 from urllib.parse import quote
 from datetime import datetime, timezone, timedelta, date
 from calendar import monthrange
+from types import SimpleNamespace
 from typing import Optional, List, Tuple
 
 from markupsafe import Markup
@@ -28,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, ForeignKey, func, case, and_, or_
+    Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, func, case, and_, or_, UniqueConstraint
 )
 from sqlalchemy.orm import relationship, Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
@@ -63,14 +64,145 @@ except ImportError:
     from app.search import run_search
 
 try:
+    from branch_scope import (
+        VIEW_BRANCH_COOKIE,
+        allocate_doc_no,
+        approver_candidate_ids,
+        approver_candidate_users,
+        can_switch_branch_view,
+        default_branch_id,
+        resolve_view_branch_id,
+        scope_completed_query,
+        user_branch_id,
+        visible_document_ids,
+    )
+except ImportError:
+    from app.branch_scope import (
+        VIEW_BRANCH_COOKIE,
+        allocate_doc_no,
+        approver_candidate_ids,
+        approver_candidate_users,
+        can_switch_branch_view,
+        default_branch_id,
+        resolve_view_branch_id,
+        scope_completed_query,
+        user_branch_id,
+        visible_document_ids,
+    )
+
+try:
     from delegation import apply_auto_delegation_for_approver, apply_auto_delegation_for_rows
 except ImportError:
     from app.delegation import apply_auto_delegation_for_approver, apply_auto_delegation_for_rows
 
 try:
+    from doc_requirements import (
+        can_submit_work_log,
+        is_user_on_leave_on_date,
+        is_work_log_approver_grade,
+        trip_report_writer_dept_label,
+        user_can_submit_trip_report,
+        user_must_submit_work_log,
+        work_log_duty_status,
+        work_log_manager_users,
+        WORK_LOG_MIN_APPROVER_GRADE,
+        WORK_LOG_MAX_APPROVER_GRADE,
+    )
+except ImportError:
+    from app.doc_requirements import (
+        can_submit_work_log,
+        is_user_on_leave_on_date,
+        is_work_log_approver_grade,
+        trip_report_writer_dept_label,
+        user_can_submit_trip_report,
+        user_must_submit_work_log,
+        work_log_duty_status,
+        work_log_manager_users,
+        WORK_LOG_MIN_APPROVER_GRADE,
+        WORK_LOG_MAX_APPROVER_GRADE,
+    )
+
+try:
     from pdf_watermark import apply_viewer_watermark
 except ImportError:
     from app.pdf_watermark import apply_viewer_watermark
+
+try:
+    from work_schedule import (
+        BASE_DAY_HOURS,
+        WEEKLY_MAX_HOURS,
+        DOC_APPROVAL_GUIDES,
+        OFF_REASONS,
+        approval_guide_for,
+        build_timesheet_doc_body,
+        build_week_row,
+        is_excluded_from_work_schedule,
+        leave_off_labels_for_user,
+        monday_of_week,
+        parse_ymd as ws_parse_ymd,
+        sync_schedule_from_approved_doc,
+        upsert_schedule_entry,
+        week_dates,
+        week_payroll_sums,
+        week_total_hours,
+    )
+except ImportError:
+    from app.work_schedule import (
+        BASE_DAY_HOURS,
+        WEEKLY_MAX_HOURS,
+        DOC_APPROVAL_GUIDES,
+        OFF_REASONS,
+        approval_guide_for,
+        build_timesheet_doc_body,
+        build_week_row,
+        is_excluded_from_work_schedule,
+        leave_off_labels_for_user,
+        monday_of_week,
+        parse_ymd as ws_parse_ymd,
+        sync_schedule_from_approved_doc,
+        upsert_schedule_entry,
+        week_dates,
+        week_payroll_sums,
+        week_total_hours,
+    )
+
+try:
+    from leave_stats import (
+        OUTING_KIND_NAME,
+        OUTING_UNIT_MINUTES,
+        WORK_DAY_HOURS,
+        build_branch_leave_status,
+        parse_leave_duration_minutes,
+        work_day_minutes,
+    )
+except ImportError:
+    from app.leave_stats import (
+        OUTING_KIND_NAME,
+        OUTING_UNIT_MINUTES,
+        WORK_DAY_HOURS,
+        build_branch_leave_status,
+        parse_leave_duration_minutes,
+        work_day_minutes,
+    )
+
+try:
+    from nav_settings import (
+        AppSetting,
+        NAV_ITEMS,
+        NavAccessMiddleware,
+        get_nav_visibility,
+        nav_visibility_for_user,
+        save_nav_visibility,
+    )
+except ImportError:
+    from app.nav_settings import (
+        AppSetting,
+        NAV_ITEMS,
+        NavAccessMiddleware,
+        get_nav_visibility,
+        nav_visibility_for_user,
+        save_nav_visibility,
+    )
 
 import uuid
 from io import BytesIO
@@ -99,11 +231,30 @@ def now():
 # DB Models
 # ---------------------------
 
+class Branch(Base):
+    __tablename__ = "branches"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120), nullable=False, default="")
+    code = Column(String(20), unique=True, nullable=False, default="")
+    is_headquarters = Column(Boolean, nullable=False, default=False)
+
+
 class Grade(Base):
     __tablename__ = "grades"
     id = Column(Integer, primary_key=True)
     name = Column(String(50), unique=True, nullable=False)
+    # 작을수록 목록 상단(높은 직급). 결재는 sort_order 큰 값(낮은 직급)부터 진행.
+    sort_order = Column("level", Integer, nullable=False, default=1)
     is_active = Column(Boolean, default=True)
+
+
+class Department(Base):
+    __tablename__ = "departments"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120), unique=True, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=1)
+    is_active = Column(Boolean, default=True)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -117,7 +268,9 @@ class User(Base):
     delegate_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     password_hash = Column(String(255), nullable=False)
     must_change_pw = Column(Boolean, nullable=False, default=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
+    branch = relationship("Branch", foreign_keys=[branch_id])
 
 class Document(Base):
     __tablename__ = "documents"
@@ -125,6 +278,7 @@ class Document(Base):
     title = Column(String(200), nullable=False)
     body = Column(Text, nullable=False, default="")
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
     mode = Column(String(20), nullable=False, default="SEQUENTIAL")
     doc_type = Column(String(20), nullable=False, default="GENERAL")
     doc_no = Column(String(30), nullable=False, default="")
@@ -140,12 +294,14 @@ class Document(Base):
     overtime_start = Column(String(5), nullable=False, default="")
     overtime_end = Column(String(5), nullable=False, default="")
     overtime_reason = Column(String(100), nullable=False, default="")
+    work_hours = Column(String(20), nullable=False, default="")
     cert_type = Column(String(20), nullable=False, default="")
     cert_usage = Column(String(100), nullable=False, default="")
     expense_total = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=now, onupdate=now)
     creator = relationship("User", foreign_keys=[creator_id])
+    branch = relationship("Branch", foreign_keys=[branch_id])
     approvers = relationship("Approver", back_populates="doc", cascade="all, delete-orphan")
     expense_items = relationship("ExpenseItem", back_populates="doc", cascade="all, delete-orphan")
     logs = relationship("EventLog", back_populates="doc", cascade="all, delete-orphan")
@@ -288,6 +444,22 @@ class Schedule(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
     user = relationship("User", foreign_keys=[user_id])
     document = relationship("Document", foreign_keys=[document_id])
+    trip_members = relationship(
+        "ScheduleTripMember",
+        back_populates="schedule",
+        cascade="all, delete-orphan",
+    )
+
+
+class ScheduleTripMember(Base):
+    """측정팀 일정 출장자."""
+    __tablename__ = "schedule_trip_members"
+    __table_args__ = (UniqueConstraint("schedule_id", "user_id", name="uq_schedule_trip_member"),)
+    id = Column(Integer, primary_key=True)
+    schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    schedule = relationship("Schedule", back_populates="trip_members")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class WorkLog(Base):
@@ -323,14 +495,16 @@ class WorkLogLine(Base):
 # ---------------------------
 
 class Region(Base):
-    """출장/회계 지역 마스터 — 데이터 파편화 방지용 정규 테이블"""
+    """출장/회계 지역 마스터 — 지사별 이름 중복 허용 (원주본사·제천지사 각각 관리)"""
     __tablename__ = "regions"
+    __table_args__ = (UniqueConstraint("branch_id", "name", name="uq_regions_branch_name"),)
     id = Column(Integer, primary_key=True)
-    name = Column(String(50), unique=True, nullable=False)
+    name = Column(String(50), nullable=False)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
 
 
 class Collection(Base):
-    """수금 내역 — 미수금대장·일월계표의 수금 집계 원천"""
+    """수금 내역 — 미수금대장·일월계표의 수금 집계 원천 (지사별)"""
     __tablename__ = "collections"
     id = Column(Integer, primary_key=True)
     company_name = Column(String(100), nullable=False, default="")
@@ -338,6 +512,8 @@ class Collection(Base):
     amount = Column(Integer, nullable=False, default=0)
     collection_date = Column(String(10), nullable=False, default="")
     note = Column(Text, nullable=False, default="")
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
+    branch = relationship("Branch", foreign_keys=[branch_id])
 
 
 class TripReport(Base):
@@ -376,6 +552,38 @@ class TripReportLine(Base):
     trip_report = relationship("TripReport", back_populates="lines")
 
 
+class WorkScheduleEntry(Base):
+    """근무표 일별 — 조기·연장·주말 시간 (기본 8.5h는 화면 계산)."""
+    __tablename__ = "work_schedule_entries"
+    __table_args__ = (UniqueConstraint("user_id", "work_date", name="uq_work_schedule_user_date"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
+    work_date = Column(String(10), nullable=False)
+    early_hours = Column(Float, nullable=False, default=0.0)
+    overtime_hours = Column(Float, nullable=False, default=0.0)
+    weekend_hours = Column(Float, nullable=False, default=0.0)
+    is_day_off = Column(Boolean, nullable=False, default=False)
+    off_reason = Column(String(30), nullable=False, default="")
+    note = Column(Text, nullable=False, default="")
+    source_doc_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=now)
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class WorkTimesheetMonth(Base):
+    """월간 근무표 결재 상태."""
+    __tablename__ = "work_timesheet_months"
+    __table_args__ = (UniqueConstraint("user_id", "year_month", name="uq_timesheet_user_month"),)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
+    year_month = Column(String(7), nullable=False)
+    status = Column(String(20), nullable=False, default="DRAFT")
+    doc_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=now)
+
+
 class QualityDoc(Base):
     """품질문서 이력 — NAS 볼륨의 실 파일과 매핑, 결재로 재개정"""
     __tablename__ = "quality_docs"
@@ -389,13 +597,22 @@ class QualityDoc(Base):
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
     uploader_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     status = Column(String(20), nullable=False, default="ACTIVE")
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=now, onupdate=now)
     document = relationship("Document", foreign_keys=[document_id])
     uploader = relationship("User", foreign_keys=[uploader_id])
+    branch = relationship("Branch", foreign_keys=[branch_id])
 
 
-def query_trip_billing_lines(db: Session, *, date_from: str = "", date_to: str = "", region_id: Optional[int] = None):
+def query_trip_billing_lines(
+    db: Session,
+    *,
+    date_from: str = "",
+    date_to: str = "",
+    region_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+):
     """최종 승인(APPROVED_FINAL) 출장복명서 라인만 — 회계 청구액 집계용."""
     q = (
         db.query(TripReportLine)
@@ -405,6 +622,8 @@ def query_trip_billing_lines(db: Session, *, date_from: str = "", date_to: str =
         .filter(Document.status == "APPROVED_FINAL")
         .filter(Document.is_deleted == False)
     )
+    if branch_id is not None:
+        q = q.filter(Document.branch_id == int(branch_id))
     if date_from:
         q = q.filter(TripReportLine.line_date >= date_from)
     if date_to:
@@ -412,6 +631,10 @@ def query_trip_billing_lines(db: Session, *, date_from: str = "", date_to: str =
     if region_id is not None:
         q = q.filter(TripReport.region_id == region_id)
     return q
+
+
+def _collections_base_query(db: Session, branch_id: int):
+    return db.query(Collection).filter(Collection.branch_id == int(branch_id))
 
 
 def trip_line_billing_amount(line: TripReportLine) -> int:
@@ -523,18 +746,20 @@ def _iter_months(date_from: str, date_to: str):
             cur = date(cur.year, cur.month + 1, 1)
 
 
-def _sum_trip_billing(db: Session, date_from: str, date_to: str) -> int:
+def _sum_trip_billing(db: Session, date_from: str, date_to: str, *, branch_id: int) -> int:
     expr = _trip_billing_amount_expr()
     return int(
-        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to, branch_id=branch_id)
         .with_entities(func.coalesce(func.sum(expr), 0))
         .scalar()
         or 0
     )
 
 
-def _sum_collections(db: Session, date_from: str = "", date_to: str = "") -> int:
-    q = db.query(func.coalesce(func.sum(Collection.amount), 0))
+def _sum_collections(db: Session, date_from: str = "", date_to: str = "", *, branch_id: int) -> int:
+    q = _collections_base_query(db, branch_id).with_entities(
+        func.coalesce(func.sum(Collection.amount), 0)
+    )
     if date_from:
         q = q.filter(Collection.collection_date >= date_from)
     if date_to:
@@ -542,12 +767,12 @@ def _sum_collections(db: Session, date_from: str = "", date_to: str = "") -> int
     return int(q.scalar() or 0)
 
 
-def _cumulative_receivable(db: Session, as_of: str) -> int:
+def _cumulative_receivable(db: Session, as_of: str, *, branch_id: int) -> int:
     """기준일까지 누적 미수 잔액 = 전체 청구(최종승인) − 전체 수금."""
     if not as_of:
         return 0
-    billing = _sum_trip_billing(db, "", as_of)
-    collection = _sum_collections(db, "", as_of)
+    billing = _sum_trip_billing(db, "", as_of, branch_id=branch_id)
+    collection = _sum_collections(db, "", as_of, branch_id=branch_id)
     return billing - collection
 
 
@@ -565,12 +790,12 @@ def _bucket_end_date(bucket: str, mode: str, date_to: str) -> str:
     return date_to
 
 
-def _receivable_at_end_dates(db: Session, end_dates: List[str]) -> dict[str, int]:
+def _receivable_at_end_dates(db: Session, end_dates: List[str], *, branch_id: int) -> dict[str, int]:
     if not end_dates:
         return {}
     max_end = max(end_dates)
-    bill_daily = _billing_by_day(db, "2000-01-01", max_end)
-    coll_daily = _collections_by_day(db, "2000-01-01", max_end)
+    bill_daily = _billing_by_day(db, "2000-01-01", max_end, branch_id=branch_id)
+    coll_daily = _collections_by_day(db, "2000-01-01", max_end, branch_id=branch_id)
     event_dates = sorted(set(bill_daily) | set(coll_daily))
     running_b = running_c = 0
     ei = 0
@@ -585,10 +810,10 @@ def _receivable_at_end_dates(db: Session, end_dates: List[str]) -> dict[str, int
     return result
 
 
-def _billing_by_day(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+def _billing_by_day(db: Session, date_from: str, date_to: str, *, branch_id: int) -> dict[str, int]:
     expr = _trip_billing_amount_expr()
     rows = (
-        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to, branch_id=branch_id)
         .with_entities(
             TripReportLine.line_date.label("day"),
             func.coalesce(func.sum(expr), 0).label("amount"),
@@ -599,9 +824,10 @@ def _billing_by_day(db: Session, date_from: str, date_to: str) -> dict[str, int]
     return {str(r.day or ""): int(r.amount) for r in rows}
 
 
-def _collections_by_day(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+def _collections_by_day(db: Session, date_from: str, date_to: str, *, branch_id: int) -> dict[str, int]:
     rows = (
-        db.query(
+        _collections_base_query(db, branch_id)
+        .with_entities(
             Collection.collection_date.label("day"),
             func.coalesce(func.sum(Collection.amount), 0).label("amount"),
         )
@@ -615,11 +841,11 @@ def _collections_by_day(db: Session, date_from: str, date_to: str) -> dict[str, 
     return {str(r.day or ""): int(r.amount) for r in rows}
 
 
-def _billing_by_month(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+def _billing_by_month(db: Session, date_from: str, date_to: str, *, branch_id: int) -> dict[str, int]:
     expr = _trip_billing_amount_expr()
     month_key = func.substr(TripReportLine.line_date, 1, 7)
     rows = (
-        query_trip_billing_lines(db, date_from=date_from, date_to=date_to)
+        query_trip_billing_lines(db, date_from=date_from, date_to=date_to, branch_id=branch_id)
         .with_entities(
             month_key.label("month"),
             func.coalesce(func.sum(expr), 0).label("amount"),
@@ -630,10 +856,11 @@ def _billing_by_month(db: Session, date_from: str, date_to: str) -> dict[str, in
     return {str(r.month or ""): int(r.amount) for r in rows}
 
 
-def _collections_by_month(db: Session, date_from: str, date_to: str) -> dict[str, int]:
+def _collections_by_month(db: Session, date_from: str, date_to: str, *, branch_id: int) -> dict[str, int]:
     month_key = func.substr(Collection.collection_date, 1, 7)
     rows = (
-        db.query(
+        _collections_base_query(db, branch_id)
+        .with_entities(
             month_key.label("month"),
             func.coalesce(func.sum(Collection.amount), 0).label("amount"),
         )
@@ -648,21 +875,21 @@ def _collections_by_month(db: Session, date_from: str, date_to: str) -> dict[str
 
 
 def _accounting_flow_rows(
-    db: Session, mode: str, date_from: str, date_to: str
+    db: Session, mode: str, date_from: str, date_to: str, *, branch_id: int
 ) -> List[dict]:
     out: List[dict] = []
     if mode == "month":
-        billing_map = _billing_by_day(db, date_from, date_to)
-        collection_map = _collections_by_day(db, date_from, date_to)
+        billing_map = _billing_by_day(db, date_from, date_to, branch_id=branch_id)
+        collection_map = _collections_by_day(db, date_from, date_to, branch_id=branch_id)
         buckets = list(_iter_days(date_from, date_to))
     elif mode in ("quarter", "year"):
-        billing_map = _billing_by_month(db, date_from, date_to)
-        collection_map = _collections_by_month(db, date_from, date_to)
+        billing_map = _billing_by_month(db, date_from, date_to, branch_id=branch_id)
+        collection_map = _collections_by_month(db, date_from, date_to, branch_id=branch_id)
         buckets = list(_iter_months(date_from, date_to))
     else:
         return out
     end_dates = [_bucket_end_date(b, mode, date_to) for b in buckets]
-    receivable_map = _receivable_at_end_dates(db, end_dates)
+    receivable_map = _receivable_at_end_dates(db, end_dates, branch_id=branch_id)
     for bucket in buckets:
         billing = billing_map.get(bucket, 0)
         collection = collection_map.get(bucket, 0)
@@ -690,18 +917,39 @@ def _parse_ledger_month(request: Request) -> Tuple[str, str, str]:
         return ref, ref + "-01", today
 
 
+def _regions_for_branch(db: Session, branch_id: int) -> List[Region]:
+    return (
+        db.query(Region)
+        .filter(Region.branch_id == int(branch_id))
+        .order_by(Region.name.asc())
+        .all()
+    )
+
+
+def _view_branch_id(request: Request, user: User, db: Session) -> int:
+    """조회 지사(헤더 전환·쿠키·쿼리). 상신·소속 변경은 user_branch_id 유지."""
+    return resolve_view_branch_id(
+        request, user, db, grade_cls=Grade, branch_cls=Branch
+    )
+
+
+def _resolve_accounting_branch_id(request: Request, user: User, db: Session) -> int:
+    return _view_branch_id(request, user, db)
+
+
 def _build_ledger_rows(
     db: Session,
     month_start: str,
     month_end: str,
     *,
+    branch_id: int,
     region_id: Optional[int] = None,
     company_q: str = "",
 ) -> List[dict]:
     expr = _trip_billing_amount_expr()
     region_name_expr = func.coalesce(Region.name, "")
     billing_q = (
-        query_trip_billing_lines(db)
+        query_trip_billing_lines(db, branch_id=branch_id)
         .outerjoin(Region, TripReport.region_id == Region.id)
     )
     if region_id is not None:
@@ -723,7 +971,7 @@ def _build_ledger_rows(
         ).label("billing_current"),
     ).group_by(TripReportLine.company_name, region_name_expr).all()
 
-    coll_q = db.query(Collection)
+    coll_q = _collections_base_query(db, branch_id)
     if region_id is not None:
         reg = db.query(Region).filter(Region.id == region_id).first()
         if reg:
@@ -797,6 +1045,10 @@ def _build_ledger_rows(
 app = FastAPI(title="approval_mvp")
 app.add_middleware(SessionIdleMiddleware)
 app.add_middleware(IpAllowlistMiddleware)
+app.add_middleware(NavAccessMiddleware)
+app.state.nav_load_session = load_session_token
+app.state.nav_user_model = User
+app.state.nav_db_factory = SessionLocal
 
 # ------------------------------------------------------------
 # 표시용(한글) - 템플릿에서 쓰기 편하게 함수로 제공
@@ -814,13 +1066,34 @@ def status_ko(status: str) -> str:
     }.get(status or "", status or "-")
 
 def mode_ko(mode: str) -> str:
-    return {"SEQUENTIAL": "순차", "PARALLEL": "병렬"}.get(mode or "", mode or "-")
+    return {
+        "SEQUENTIAL": "순차",
+        "PARALLEL": "병렬",
+        "GRADE_TIER": "직급순·동급병렬",
+        "RECORD": "기록(결재없음)",
+    }.get(mode or "", mode or "-")
+
+def _trip_report_approval_dept_prefixes() -> List[str]:
+    """출장복명서 결재 부서 접두사 (기본: 관리팀, 측정팀 — 측정팀1~5 포함)."""
+    raw = (os.getenv("TRIP_REPORT_APPROVAL_DEPTS") or "").strip()
+    if not raw:
+        legacy = (os.getenv("TRIP_REPORT_APPROVAL_DEPT_PREFIX") or "").strip()
+        if legacy:
+            raw = legacy
+        else:
+            raw = "관리,측정"
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _trip_report_approval_dept_label() -> str:
+    return ", ".join(_trip_report_approval_dept_prefixes())
 
 def doctype_ko(dt: str) -> str:
     return {
         "GENERAL": "일반 기안", "QUALITY": "품질문서", "LEAVE": "휴가신청",
         "EXPENSE": "지출결의서", "OVERTIME": "연장근무 신청", "CERTIFICATE": "증명서 발급",
         "WORK_LOG": "업무일지", "TRIP_REPORT": "출장복명서",
+        "EARLY_ARRIVAL": "조기출근", "WEEKEND_WORK": "주말근무", "TIMESHEET": "근무표(월간)",
     }.get(dt or "", dt or "-")
 
 SCHEDULE_TYPES = {
@@ -845,6 +1118,44 @@ def _jinja_tojson(val) -> Markup:
 
 templates.env.filters["tojson"] = _jinja_tojson
 templates.env.filters["status_ko"] = status_ko
+
+_base_template_response = templates.TemplateResponse
+
+
+def _enrich_template_context(context: dict) -> dict:
+    request = context.get("request")
+    user = context.get("user")
+    if not request or not user or not getattr(user, "id", None):
+        return context
+    db = SessionLocal()
+    try:
+        can = can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch)
+        vid = resolve_view_branch_id(request, user, db, grade_cls=Grade, branch_cls=Branch)
+        vb = db.query(Branch).filter(Branch.id == vid).first()
+        home_bid = user_branch_id(user)
+        home = db.query(Branch).filter(Branch.id == home_bid).first()
+        out = dict(context)
+        out["can_switch_branch"] = can
+        out["view_branch_id"] = vid
+        out["view_branch"] = vb
+        out["home_branch"] = home
+        out["all_branches"] = db.query(Branch).order_by(Branch.id).all() if can else []
+        out["nav_visible"] = nav_visibility_for_user(db, user)
+        return out
+    except Exception as e:
+        print(f"[template] branch context enrich failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return context
+    finally:
+        db.close()
+
+
+def _template_response(name: str, context: dict, *args, **kwargs):
+    return _base_template_response(name, _enrich_template_context(context), *args, **kwargs)
+
+
+templates.TemplateResponse = _template_response  # type: ignore[method-assign]
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
@@ -879,9 +1190,16 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     try:
         data = load_session_token(token)
         uid = int(data.get("uid"))
-        user = db.query(User).filter(User.id == uid, User.is_active == True).first()
+        user = (
+            db.query(User)
+            .options(joinedload(User.branch))
+            .filter(User.id == uid, User.is_active == True)
+            .first()
+        )
         if not user:
             raise HTTPException(401, "사용자를 찾을 수 없습니다.")
+        if getattr(user, "branch_id", None) is None:
+            user.branch_id = default_branch_id()
         return user
     except (BadSignature, Exception):
         raise HTTPException(401, "세션이 유효하지 않습니다.")
@@ -899,21 +1217,44 @@ def _is_truthy_admin(val) -> bool:
     return s in ("1", "y", "yes", "true", "on", "admin", "관리자")
 
 
-def _resolve_user_grade(db: Session, grade_id_raw: str, grade_text: str) -> str:
-    text = (grade_text or "").strip()
-    if grade_id_raw:
-        try:
-            gid = int(str(grade_id_raw).strip())
-            g = db.query(Grade).filter(Grade.id == gid, Grade.is_active == True).first()
-            if g:
-                return g.name
-        except (TypeError, ValueError):
-            pass
-    return text
+def _resolve_user_dept(db: Session, dept_id_raw: str) -> str:
+    """드롭다운 선택만 반영 — 수기 입력 없음."""
+    if not dept_id_raw:
+        return ""
+    try:
+        did = int(str(dept_id_raw).strip())
+        d = db.query(Department).filter(Department.id == did, Department.is_active == True).first()
+        return d.name if d else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _lookup_dept_name(db: Session, dept_cell: str) -> str:
+    """CSV: 부서 관리에 등록된 이름·id만 허용."""
+    cell = (dept_cell or "").strip()
+    if not cell:
+        return ""
+    if cell.isdigit():
+        d = db.query(Department).filter(Department.id == int(cell), Department.is_active == True).first()
+        return d.name if d else ""
+    d = db.query(Department).filter(Department.name == cell, Department.is_active == True).first()
+    return d.name if d else ""
+
+
+def _resolve_user_grade(db: Session, grade_id_raw: str) -> str:
+    """드롭다운 선택만 반영 — 수기 입력 없음."""
+    if not grade_id_raw:
+        return ""
+    try:
+        gid = int(str(grade_id_raw).strip())
+        g = db.query(Grade).filter(Grade.id == gid, Grade.is_active == True).first()
+        return g.name if g else ""
+    except (TypeError, ValueError):
+        return ""
 
 
 def _lookup_grade_name(db: Session, grade_cell: str) -> str:
-    """CSV grade: 직급명 또는 숫자 id."""
+    """CSV: 직급 관리에 등록된 이름·id만 허용."""
     cell = (grade_cell or "").strip()
     if not cell:
         return ""
@@ -921,7 +1262,23 @@ def _lookup_grade_name(db: Session, grade_cell: str) -> str:
         g = db.query(Grade).filter(Grade.id == int(cell), Grade.is_active == True).first()
         return g.name if g else ""
     g = db.query(Grade).filter(Grade.name == cell, Grade.is_active == True).first()
-    return g.name if g else cell
+    return g.name if g else ""
+
+
+def _resolve_branch_id(db: Session, branch_cell: str) -> int:
+    """CSV·폼: 지사 code(WJ/JC) 또는 이름."""
+    cell = (branch_cell or "").strip()
+    if not cell:
+        return default_branch_id()
+    if cell.isdigit():
+        b = db.query(Branch).filter(Branch.id == int(cell)).first()
+        return int(b.id) if b else default_branch_id()
+    b = (
+        db.query(Branch)
+        .filter(or_(func.upper(Branch.code) == cell.upper(), Branch.name == cell))
+        .first()
+    )
+    return int(b.id) if b else default_branch_id()
 
 
 def _count_active_admins(db: Session, exclude_user_id: Optional[int] = None) -> int:
@@ -944,6 +1301,274 @@ def _admin_redirect_grades(message: str = "") -> RedirectResponse:
         url += "?flash=" + quote(message, safe="")
     return RedirectResponse(url, status_code=303)
 
+
+def _admin_redirect_depts(message: str = "") -> RedirectResponse:
+    url = "/admin/depts"
+    if message:
+        url += "?flash=" + quote(message, safe="")
+    return RedirectResponse(url, status_code=303)
+
+
+def _admin_redirect_nav(message: str = "") -> RedirectResponse:
+    url = "/admin/nav"
+    if message:
+        url += "?flash=" + quote(message, safe="")
+    return RedirectResponse(url, status_code=303)
+
+
+def _departments_list_query(db: Session):
+    return db.query(Department).order_by(Department.sort_order.asc(), Department.id.asc())
+
+
+def _apply_dept_sort_order(db: Session, ordered_ids: List[int]) -> None:
+    for i, did in enumerate(ordered_ids, start=1):
+        d = db.query(Department).filter(Department.id == did).first()
+        if d:
+            d.sort_order = i
+
+
+def _normalize_dept_sort_orders(db: Session) -> None:
+    depts = _departments_list_query(db).all()
+    if not depts:
+        return
+    orders = [int(d.sort_order or 0) for d in depts]
+    if len(orders) == len(set(orders)) and min(orders) >= 1:
+        return
+    _apply_dept_sort_order(db, [d.id for d in depts])
+    db.commit()
+
+
+def _move_dept_in_list(db: Session, dept_id: int, direction: int) -> Tuple[bool, str]:
+    _normalize_dept_sort_orders(db)
+    depts = _departments_list_query(db).all()
+    ids = [d.id for d in depts]
+    if dept_id not in ids:
+        return False, "부서를 찾을 수 없습니다."
+    idx = ids.index(dept_id)
+    new_idx = idx + direction
+    if new_idx < 0 or new_idx >= len(ids):
+        return False, "더 이상 옮길 수 없습니다."
+    ids[idx], ids[new_idx] = ids[new_idx], ids[idx]
+    _apply_dept_sort_order(db, ids)
+    db.commit()
+    return True, "부서 순서를 변경했습니다."
+
+
+def _next_dept_sort_order(db: Session) -> int:
+    mx = db.query(func.max(Department.sort_order)).scalar()
+    return int(mx or 0) + 1
+
+
+def _ensure_departments_ready(db: Session) -> None:
+    """departments 테이블 없으면 마이그레이션 후 시드."""
+    try:
+        db.query(Department).limit(1).all()
+    except Exception:
+        db.rollback()
+        try:
+            migrate_schema()
+            _backfill_departments_from_users(db)
+        except Exception as e:
+            print(f"[depts] ensure ready failed: {e}")
+            db.rollback()
+
+
+def _active_departments(db: Session) -> List:
+    _ensure_departments_ready(db)
+    return _departments_list_query(db).filter(Department.is_active == True).all()
+
+
+def _backfill_departments_from_users(db: Session) -> None:
+    """기존 사용자 dept 문자열 → departments 마스터 시드."""
+    _ensure_departments_ready(db)
+    if db.query(Department).count() > 0:
+        return
+    names: List[str] = []
+    for (dept,) in db.query(User.dept).distinct().all():
+        n = (dept or "").strip()
+        if n and n not in names:
+            names.append(n)
+    for i, n in enumerate(sorted(names), start=1):
+        db.add(Department(name=n, is_active=True, sort_order=i))
+    if names:
+        db.commit()
+
+
+def _grades_list_query(db: Session):
+    return db.query(Grade).order_by(Grade.sort_order.asc(), Grade.id.asc())
+
+
+def _apply_grade_sort_order(db: Session, ordered_ids: List[int]) -> None:
+    """직급 id 목록 순서대로 sort_order 1..N 재부여."""
+    for i, gid in enumerate(ordered_ids, start=1):
+        g = db.query(Grade).filter(Grade.id == gid).first()
+        if g:
+            g.sort_order = i
+
+
+def _normalize_grade_sort_orders(db: Session) -> None:
+    """sort_order 중복·누락 시 현재 표시 순으로 1..N 정리."""
+    grades = _grades_list_query(db).all()
+    if not grades:
+        return
+    orders = [int(g.sort_order or 0) for g in grades]
+    if len(orders) == len(set(orders)) and min(orders) >= 1:
+        return
+    _apply_grade_sort_order(db, [g.id for g in grades])
+    db.commit()
+
+
+def _backfill_grade_sort_orders(db: Session) -> None:
+    """기존 DB: sort_order가 비어있거나 전부 같으면 id 순으로 1..N 부여."""
+    grades = _grades_list_query(db).all()
+    if not grades:
+        return
+    orders = {int(g.sort_order or 0) for g in grades}
+    if len(orders) > 1 and len(orders) == len(grades):
+        return
+    _apply_grade_sort_order(db, [g.id for g in grades])
+    db.commit()
+
+
+def _move_grade_in_list(db: Session, grade_id: int, direction: int) -> Tuple[bool, str]:
+    """direction: -1=위(높은 직급), +1=아래(낮은 직급)."""
+    _normalize_grade_sort_orders(db)
+    grades = _grades_list_query(db).all()
+    ids = [g.id for g in grades]
+    if grade_id not in ids:
+        return False, "직급을 찾을 수 없습니다."
+    idx = ids.index(grade_id)
+    new_idx = idx + direction
+    if new_idx < 0 or new_idx >= len(ids):
+        return False, "더 이상 옮길 수 없습니다."
+    ids[idx], ids[new_idx] = ids[new_idx], ids[idx]
+    _apply_grade_sort_order(db, ids)
+    db.commit()
+    return True, "직급 순서를 변경했습니다."
+
+
+def _next_grade_sort_order(db: Session) -> int:
+    mx = db.query(func.max(Grade.sort_order)).scalar()
+    return int(mx or 0) + 1
+
+
+def _grade_sort_order_for_name(db: Session, grade_name: str) -> int:
+    name = (grade_name or "").strip()
+    if not name:
+        return 99999
+    g = db.query(Grade).filter(Grade.name == name, Grade.is_active == True).first()
+    if g:
+        return int(g.sort_order or 99999)
+    g2 = db.query(Grade).filter(Grade.name == name).first()
+    return int(g2.sort_order or 99999) if g2 else 99999
+
+
+def _sort_user_ids_by_grade(db: Session, user_ids: List[int]) -> List[int]:
+    """낮은 직급(큰 sort_order)부터 결재 — sort_order 내림차순."""
+    users = db.query(User).filter(User.id.in_(user_ids), User.is_active == True).all()
+    by_id = {u.id: u for u in users}
+    ordered = sorted(
+        [uid for uid in user_ids if uid in by_id],
+        key=lambda uid: _grade_sort_order_for_name(db, by_id[uid].grade),
+        reverse=True,
+    )
+    return ordered
+
+
+def _uses_grade_tier_approval(doc: Document) -> bool:
+    return str(getattr(doc, "doc_type", "")) == "WORK_LOG" or str(getattr(doc, "mode", "")) == "GRADE_TIER"
+
+
+def _is_trip_report_approval_dept(dept: str) -> bool:
+    d = (dept or "").strip()
+    if not d:
+        return False
+    for prefix in _trip_report_approval_dept_prefixes():
+        if d == prefix or d.startswith(prefix):
+            return True
+    return False
+
+
+def _trip_report_approval_users(
+    db: Session,
+    viewer: User,
+    *,
+    exclude_user_id: Optional[int] = None,
+) -> List[User]:
+    """출장복명서 자동 결재선: 동일 지사 + 관리팀·측정팀 부서."""
+    my_branch = user_branch_id(viewer)
+    q = db.query(User).filter(User.is_active == True, User.branch_id == my_branch)
+    if exclude_user_id is not None:
+        q = q.filter(User.id != int(exclude_user_id))
+    return [u for u in q.order_by(User.name).all() if _is_trip_report_approval_dept(u.dept)]
+
+
+def _trip_report_default_approver_ids(db: Session, doc: Document, submitter: User) -> List[int]:
+    team = _trip_report_approval_users(db, submitter, exclude_user_id=int(doc.creator_id))
+    ids = [u.id for u in team]
+    return _sort_user_ids_by_grade(db, ids)
+
+
+def _work_log_approval_users(db: Session, submitter: User, work_date: str) -> List[User]:
+    """업무일지 결재선 표시용: 작성자 + 동일 지사 차장~대표."""
+    bid = user_branch_id(submitter)
+    managers = work_log_manager_users(
+        db,
+        bid,
+        work_date,
+        user_cls=User,
+        grade_cls=Grade,
+        schedule_cls=Schedule,
+    )
+    by_id = {u.id: u for u in managers}
+    by_id[int(submitter.id)] = submitter
+    return list(by_id.values())
+
+
+def _work_log_default_approver_ids(
+    db: Session, doc: Document, submitter: User, work_date: str
+) -> List[int]:
+    bid = user_branch_id(submitter)
+    managers = work_log_manager_users(
+        db,
+        bid,
+        work_date,
+        user_cls=User,
+        grade_cls=Grade,
+        schedule_cls=Schedule,
+    )
+    ids = _sort_user_ids_by_grade(db, [u.id for u in managers])
+    if int(submitter.id) not in ids:
+        ids.insert(0, int(submitter.id))
+    return ids
+
+
+def _parse_submit_approver_ids(form) -> List[int]:
+    ids: List[int] = []
+    if hasattr(form, "getlist"):
+        for x in form.getlist("approver_ids"):
+            s = str(x or "").strip()
+            if not s:
+                continue
+            try:
+                uid = int(s)
+            except ValueError:
+                continue
+            if uid not in ids:
+                ids.append(uid)
+    for key in ("approver1", "approver2", "approver3", "approver4", "approver5"):
+        s = str(form.get(key) or "").strip()
+        if not s:
+            continue
+        try:
+            uid = int(s)
+        except ValueError:
+            continue
+        if uid not in ids:
+            ids.append(uid)
+    return ids
+
+
 # ------------------------------------------------------------
 # 권한 유틸
 # ------------------------------------------------------------
@@ -964,6 +1589,38 @@ def can_edit_doc(user: User, doc: Document) -> bool:
         return True
     return (int(getattr(doc, 'creator_id', -1)) == int(getattr(user, 'id', -2))) and (str(getattr(doc, 'status', '')) == "DRAFT")
 
+
+def can_delete_doc(user: User, doc: Document) -> bool:
+    """업무일지: 완료(APPROVED_FINAL/RECORD) 포함 삭제 가능. 그 외: DRAFT만."""
+    if not user or bool(getattr(doc, "is_deleted", False)):
+        return False
+    is_creator = int(getattr(doc, "creator_id", -1)) == int(getattr(user, "id", -2))
+    is_admin = bool(getattr(user, "is_admin", False))
+    if not is_creator and not is_admin:
+        return False
+    if str(getattr(doc, "doc_type", "")) == "WORK_LOG":
+        return True
+    return str(getattr(doc, "status", "")) == "DRAFT"
+
+
+def _soft_delete_document(db: Session, doc: Document, user: User) -> None:
+    doc.is_deleted = True
+    doc.status = "DELETED"
+    doc.updated_at = now()
+    if str(getattr(doc, "doc_type", "")) == "WORK_LOG":
+        wl = db.query(WorkLog).filter(WorkLog.doc_id == doc.id).first()
+        if wl:
+            db.delete(wl)
+    db.add(
+        EventLog(
+            doc_id=doc.id,
+            user_id=user.id,
+            event="DELETE",
+            note=f"문서 삭제 ({getattr(doc, 'doc_type', '')})",
+        )
+    )
+
+
 def can_approve_doc(user: User, doc: Document, db: Session) -> bool:
     if str(doc.status) != "IN_REVIEW":
         return False
@@ -978,9 +1635,9 @@ def can_approve_doc(user: User, doc: Document, db: Session) -> bool:
     ap = db.query(Approver).filter(Approver.doc_id == doc.id, Approver.approver_id.in_(allowed_ids)).first()
     if not ap:
         return False
-    if str(doc.mode) == "SEQUENTIAL":
-        pending = current_pending_approver(db, doc)
-        return pending is not None and pending.approver_id in allowed_ids
+    if str(doc.mode) in ("SEQUENTIAL", "GRADE_TIER") or _uses_grade_tier_approval(doc):
+        pending_list = current_pending_approvers(db, doc)
+        return any(p.approver_id in allowed_ids for p in pending_list)
     return (
         db.query(Approver)
         .filter(Approver.doc_id == doc.id, Approver.approver_id.in_(allowed_ids), Approver.action == "PENDING")
@@ -989,10 +1646,173 @@ def can_approve_doc(user: User, doc: Document, db: Session) -> bool:
     )
 
 
+def current_pending_approvers(db: Session, doc: Document) -> List[Approver]:
+    """현재 결재 가능한 Approver 행 (동직급 병렬 시 복수)."""
+    if str(doc.mode) == "PARALLEL":
+        return (
+            db.query(Approver)
+            .filter(Approver.doc_id == doc.id, Approver.action == "PENDING")
+            .order_by(Approver.order_no.asc())
+            .all()
+        )
+    if _uses_grade_tier_approval(doc) or str(doc.mode) in ("SEQUENTIAL", "GRADE_TIER"):
+        rows = (
+            db.query(Approver)
+            .filter(Approver.doc_id == doc.id)
+            .order_by(Approver.order_no.asc(), Approver.id.asc())
+            .all()
+        )
+        tiers: dict[int, list[Approver]] = {}
+        for a in rows:
+            tiers.setdefault(int(a.order_no), []).append(a)
+        for order_no in sorted(tiers.keys()):
+            tier = tiers[order_no]
+            if any(a.action == "REJECTED" for a in tier):
+                return []
+            if all(a.action == "APPROVED" for a in tier):
+                continue
+            return [a for a in tier if a.action == "PENDING"]
+        return []
+    return []
+
+
 def current_pending_approver(db: Session, doc: Document) -> Optional[Approver]:
-    if str(doc.mode) != "SEQUENTIAL":
-        return None
-    return db.query(Approver).filter(Approver.doc_id == doc.id, Approver.action == "PENDING").order_by(Approver.order_no.asc()).first()
+    pending = current_pending_approvers(db, doc)
+    return pending[0] if pending else None
+
+def _promote_next_approval_tier(db: Session, doc: Document) -> None:
+    """순차/직급단계: 다음 order_no 단계의 WAITING → PENDING."""
+    if str(doc.mode) == "PARALLEL":
+        return
+    rows = (
+        db.query(Approver)
+        .filter(Approver.doc_id == doc.id)
+        .order_by(Approver.order_no.asc(), Approver.id.asc())
+        .all()
+    )
+    tiers: dict[int, list[Approver]] = {}
+    for a in rows:
+        tiers.setdefault(int(a.order_no), []).append(a)
+    for order_no in sorted(tiers.keys()):
+        tier = tiers[order_no]
+        if not all(a.action == "APPROVED" for a in tier):
+            for a in tier:
+                if a.action == "WAITING":
+                    a.action = "PENDING"
+                    apply_auto_delegation_for_approver(
+                        db,
+                        a,
+                        doc_id=int(doc.id),
+                        doc_title=str(doc.title or ""),
+                        doc_link=f"/doc/{doc.id}",
+                        user_cls=User,
+                        schedule_cls=Schedule,
+                        event_log_cls=EventLog,
+                        notify=_notify,
+                    )
+                    _notify(
+                        db,
+                        int(a.approver_id),
+                        f"[결재요청] 「{doc.title}」 결재 차례입니다",
+                        f"/doc/{doc.id}",
+                    )
+            break
+
+
+def _finalize_work_log_record(db: Session, doc: Document, user: User) -> None:
+    """업무일지 — 결재선 없이 저장 즉시 기록 완료."""
+    doc.status = "APPROVED_FINAL"
+    doc.mode = "RECORD"
+    db.query(Approver).filter(Approver.doc_id == doc.id).delete(synchronize_session=False)
+    db.add(
+        EventLog(
+            doc_id=doc.id,
+            user_id=user.id,
+            event="WORK_LOG_SAVED",
+            note="업무일지 기록(결재 없음)",
+        )
+    )
+
+
+def _create_doc_approvers(
+    db: Session,
+    doc: Document,
+    user_ids: List[int],
+    *,
+    submitter: User,
+) -> List[Approver]:
+    """문서 유형·모드에 맞게 결재선 생성."""
+    db.query(Approver).filter(Approver.doc_id == doc.id).delete(synchronize_session=False)
+    created: List[Approver] = []
+    doc_type = str(doc.doc_type or "")
+    mode = str(doc.mode or "SEQUENTIAL")
+
+    if doc_type == "WORK_LOG":
+        doc.mode = "GRADE_TIER"
+        users = (
+            db.query(User)
+            .filter(User.id.in_(user_ids), User.is_active == True)
+            .all()
+        )
+        by_id = {u.id: u for u in users}
+        manager_users = [
+            by_id[uid]
+            for uid in user_ids
+            if uid in by_id and int(uid) != int(submitter.id)
+            and is_work_log_approver_grade(db, Grade, by_id[uid].grade)
+        ]
+        ap0 = Approver(
+            doc_id=doc.id,
+            approver_id=int(submitter.id),
+            order_no=0,
+            action="APPROVED",
+            acted_at=now(),
+        )
+        db.add(ap0)
+        created.append(ap0)
+        sorted_managers = sorted(
+            manager_users,
+            key=lambda u: _grade_sort_order_for_name(db, u.grade),
+            reverse=True,
+        )
+        tiers: List[List[User]] = []
+        for u in sorted_managers:
+            if tiers and _grade_sort_order_for_name(db, u.grade) == _grade_sort_order_for_name(
+                db, tiers[-1][0].grade
+            ):
+                tiers[-1].append(u)
+            else:
+                tiers.append([u])
+        order_no = 1
+        pending_assigned = False
+        for tier in tiers:
+            for u in tier:
+                action = "PENDING" if not pending_assigned else "WAITING"
+                ap = Approver(
+                    doc_id=doc.id,
+                    approver_id=u.id,
+                    order_no=order_no,
+                    action=action,
+                )
+                db.add(ap)
+                created.append(ap)
+            if not pending_assigned:
+                pending_assigned = True
+            order_no += 1
+        return created
+
+    sorted_ids = _sort_user_ids_by_grade(db, user_ids)
+    for i, uid in enumerate(sorted_ids, start=1):
+        action = "WAITING"
+        if mode == "PARALLEL":
+            action = "PENDING"
+        elif mode == "SEQUENTIAL" and i == 1:
+            action = "PENDING"
+        ap = Approver(doc_id=doc.id, approver_id=uid, order_no=i, action=action)
+        db.add(ap)
+        created.append(ap)
+    return created
+
 
 def update_doc_status_after_action(db: Session, doc: Document):
     approvers = db.query(Approver).filter(Approver.doc_id == doc.id).all()
@@ -1013,10 +1833,12 @@ def _on_doc_approved(db: Session, doc: Document):
         _quality_doc_finalize(db, doc)
     if str(getattr(doc, 'doc_type', '')) == "LEAVE":
         creator = db.get(User, doc.creator_id)
-        title = f"{creator.name if creator else ''} {doc.leave_kind}".strip()
+        kind = str(getattr(doc, "leave_kind", "") or "")
+        title = f"{creator.name if creator else ''} {kind}".strip()
         start = str(doc.leave_start or "")
         end = str(doc.leave_end or "")
-        if not db.query(Schedule).filter_by(document_id=doc.id).first():
+        # 외출: 전일 휴가 일정 미생성 (업무일지·근무 집계 유지)
+        if kind != OUTING_KIND_NAME and not db.query(Schedule).filter_by(document_id=doc.id).first():
             db.add(Schedule(
                 title=title,
                 start_date=start,
@@ -1034,7 +1856,9 @@ def _on_doc_approved(db: Session, doc: Document):
             end_dt = datetime.fromisoformat(end) + timedelta(days=1)
         except Exception:
             start_dt = end_dt = now()
-        if not db.query(CalendarEvent).filter_by(user_id=doc.creator_id, title=title, start_time=start_dt).first():
+        if kind != OUTING_KIND_NAME and not db.query(CalendarEvent).filter_by(
+            user_id=doc.creator_id, title=title, start_time=start_dt
+        ).first():
             db.add(CalendarEvent(
                 user_id=doc.creator_id, title=title,
                 description=f"휴가 결재 완료 (문서 #{doc.id})",
@@ -1042,9 +1866,24 @@ def _on_doc_approved(db: Session, doc: Document):
                 is_all_day=True, event_type="PERSONAL",
             ))
 
+    if str(getattr(doc, "doc_type", "")) == "TIMESHEET":
+        tm = db.query(WorkTimesheetMonth).filter(WorkTimesheetMonth.doc_id == doc.id).first()
+        if tm:
+            tm.status = "APPROVED_FINAL"
+            tm.updated_at = now()
+
+    sync_schedule_from_approved_doc(
+        db, doc, entry_cls=WorkScheduleEntry, user_cls=User
+    )
+
 
 def _on_doc_rejected(db: Session, doc: Document):
     """결재 반려 시 후처리 — 연결된 일정 취소"""
+    if str(getattr(doc, "doc_type", "")) == "TIMESHEET":
+        tm = db.query(WorkTimesheetMonth).filter(WorkTimesheetMonth.doc_id == doc.id).first()
+        if tm:
+            tm.status = "REJECTED"
+            tm.updated_at = now()
     if str(getattr(doc, 'doc_type', '')) == "LEAVE":
         sch = db.query(Schedule).filter_by(document_id=doc.id).first()
         if sch:
@@ -1062,6 +1901,8 @@ def _quality_doc_finalize(db: Session, doc: Document):
     qd = db.query(QualityDoc).filter_by(document_id=doc.id).first()
     if not qd:
         return
+    if not getattr(qd, "branch_id", None):
+        qd.branch_id = getattr(doc, "branch_id", None) or default_branch_id()
     qd.status = "ACTIVE"
 
     db.query(QualityDoc).filter(
@@ -1075,7 +1916,9 @@ def _quality_doc_finalize(db: Session, doc: Document):
         qd.original_filename = att.filename
 
         safe_doc_no = (qd.doc_no or "unknown").replace("/", "_").replace("\\", "_")
-        archive_dir = os.path.join(DATA_DIR, "quality_archive", safe_doc_no)
+        branch = db.query(Branch).filter(Branch.id == (qd.branch_id or doc.branch_id or default_branch_id())).first()
+        bcode = (branch.code if branch else "WJ").strip().upper()
+        archive_dir = os.path.join(DATA_DIR, "quality_archive", bcode, safe_doc_no)
         os.makedirs(archive_dir, exist_ok=True)
 
         ext = os.path.splitext(att.filename)[1]
@@ -1309,7 +2152,7 @@ _DEMO_APPROVER_ACCOUNTS = (
 
 def _ensure_grade_row(db: Session, name: str) -> None:
     if not db.query(Grade).filter(Grade.name == name).first():
-        db.add(Grade(name=name, is_active=True))
+        db.add(Grade(name=name, is_active=True, sort_order=_next_grade_sort_order(db)))
 
 
 def _ensure_demo_approver_user(db: Session, username: str, name: str, grade: str) -> User:
@@ -1451,14 +2294,20 @@ def _guess_media_type(path: str) -> str:
         return 'image/webp'
     return 'application/octet-stream'
 
-def visible_docs(db: Session, user: User) -> list:
-    if bool(user.is_admin):
-        return db.query(Document).filter(Document.is_deleted == False).all()
-    q_own = db.query(Document).filter(Document.is_deleted == False, Document.creator_id == user.id).all()
-    appr_ids = list({a.doc_id for a in db.query(Approver).filter(Approver.approver_id == user.id).all()})
-    q_appr = db.query(Document).filter(Document.is_deleted == False, Document.id.in_(appr_ids)).all() if appr_ids else []
-    merged = {d.id: d for d in q_own + q_appr}
-    return list(merged.values())
+def visible_docs(db: Session, user: User, *, view_branch_id: Optional[int] = None) -> list:
+    """선택(또는 소속) 지사 문서 + 결재선에 포함된 타지사 문서."""
+    ids = visible_document_ids(
+        db,
+        user,
+        document_cls=Document,
+        approver_cls=Approver,
+        user_cls=User,
+        view_branch_id=view_branch_id,
+    )
+    if not ids:
+        return []
+    rows = db.query(Document).filter(Document.id.in_(list(ids)), Document.is_deleted == False).all()
+    return list(rows)
 
 # --- 로그인/비밀번호 변경 라우트 수정 ---
 @app.post("/login")
@@ -1504,6 +2353,15 @@ def app_startup():
         print(f"[startup] migrate_schema error: {e}")
     db = SessionLocal()
     try:
+        _backfill_grade_sort_orders(db)
+        _normalize_grade_sort_orders(db)
+        _backfill_departments_from_users(db)
+        _normalize_dept_sort_orders(db)
+    except Exception as e:
+        print(f"[startup] grade/dept backfill error: {e}")
+    db.close()
+    db = SessionLocal()
+    try:
         admin = db.query(User).filter(User.username == ADMIN_ID).first()
         if not admin:
             admin = User(username=ADMIN_ID, name="관리자", is_admin=True, is_active=True, password_hash=hash_pw(ADMIN_PW), must_change_pw=False)
@@ -1522,16 +2380,52 @@ def app_startup():
 
 
 # --- 기본 라우트들 (간단한 동작 구현) ---
+@app.post("/branch-view")
+async def branch_view_set(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """관리자·대표 이상: 조회 지사 전환(쿠키 저장)."""
+    if not can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch):
+        raise HTTPException(403, "지사 전환 권한이 없습니다.")
+    form = await request.form()
+    try:
+        bid = int(str(form.get("branch_id") or "").strip())
+    except (TypeError, ValueError):
+        raise HTTPException(400, "지사를 선택하세요.")
+    if not db.query(Branch).filter(Branch.id == bid).first():
+        raise HTTPException(400, "잘못된 지사입니다.")
+    ref = str(form.get("next") or request.headers.get("referer") or "/dashboard").strip()
+    if not ref.startswith("/"):
+        ref = "/dashboard"
+    resp = RedirectResponse(url=ref, status_code=303)
+    resp.set_cookie(
+        VIEW_BRANCH_COOKIE,
+        str(bid),
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 365,
+    )
+    return resp
+
+
 @app.get("/logout")
 def logout():
     resp = RedirectResponse(url="/login")
     resp.delete_cookie("session")
+    resp.delete_cookie(VIEW_BRANCH_COOKIE)
     return resp
 
 
 @app.get("/api/regions")
-def api_regions_list(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    rows = db.query(Region).order_by(Region.name.asc()).all()
+def api_regions_list(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    bid = _resolve_accounting_branch_id(request, user, db)
+    rows = _regions_for_branch(db, bid)
     return {"regions": [{"id": r.id, "name": r.name} for r in rows]}
 
 
@@ -1551,36 +2445,73 @@ async def api_regions_create(request: Request, db: Session = Depends(get_db), us
         raise HTTPException(400, "지역명을 입력하세요.")
     if len(name) > 50:
         raise HTTPException(400, "지역명은 50자 이하여야 합니다.")
-    existing = db.query(Region).filter(Region.name == name).first()
+    bid = user_branch_id(user)
+    existing = db.query(Region).filter(Region.name == name, Region.branch_id == bid).first()
     if existing:
         return {"id": existing.id, "name": existing.name}
-    reg = Region(name=name)
+    reg = Region(name=name, branch_id=bid)
     db.add(reg)
     try:
         db.commit()
         db.refresh(reg)
     except IntegrityError:
         db.rollback()
-        existing = db.query(Region).filter(Region.name == name).first()
+        existing = db.query(Region).filter(Region.name == name, Region.branch_id == bid).first()
         if existing:
             return {"id": existing.id, "name": existing.name}
         raise HTTPException(409, "이미 등록된 지역입니다.")
     return {"id": reg.id, "name": reg.name}
 
 
+def _doc_type_permissions(db: Session, user: User, *, work_date: str = "") -> dict:
+    today = (work_date or datetime.now().strftime("%Y-%m-%d"))[:10]
+    wl_ok, wl_msg = can_submit_work_log(
+        db,
+        user,
+        today,
+        schedule_cls=Schedule,
+        trip_member_cls=ScheduleTripMember,
+        document_cls=Document,
+        worklog_cls=WorkLog,
+        entry_cls=WorkScheduleEntry,
+    )
+    tr_ok, tr_msg = user_can_submit_trip_report(user)
+    return {
+        "WORK_LOG": {"allowed": wl_ok, "reason": wl_msg},
+        "TRIP_REPORT": {"allowed": tr_ok, "reason": tr_msg},
+    }
+
+
 @app.get("/doc/new", response_class=HTMLResponse)
 def doc_new_get(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     try:
-        regions = db.query(Region).order_by(Region.name.asc()).all()
+        regions = _regions_for_branch(db, user_branch_id(user))
     except Exception as e:
         print(f"[doc_new] regions query failed: {e}")
         regions = []
     regions_json = json.dumps(
         [{"id": r.id, "name": r.name} for r in regions], ensure_ascii=False
     )
+    today = datetime.now().strftime("%Y-%m-%d")
+    perms = _doc_type_permissions(db, user, work_date=today)
+    default_type = str(request.query_params.get("doc_type") or "").strip()
+    if not default_type and perms.get("WORK_LOG", {}).get("allowed"):
+        default_type = "WORK_LOG"
+    flash = request.query_params.get("flash", "")
     return templates.TemplateResponse(
         "doc_new.html",
-        {"request": request, "user": user, "regions": regions, "regions_json": regions_json},
+        {
+            "request": request,
+            "user": user,
+            "regions": regions,
+            "regions_json": regions_json,
+            "doc_type_perms": perms,
+            "default_doc_type": default_type,
+            "work_log_today": today,
+            "trip_writer_dept_label": trip_report_writer_dept_label(),
+            "flash": flash,
+            "approval_guides": DOC_APPROVAL_GUIDES,
+        },
     )
 
 
@@ -1599,6 +2530,7 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
     overtime_start = str(form.get("overtime_start") or "")
     overtime_end = str(form.get("overtime_end") or "")
     overtime_reason = str(form.get("overtime_reason") or "")
+    work_hours = str(form.get("work_hours") or "").strip()
     cert_type = str(form.get("cert_type") or "")
     cert_usage = str(form.get("cert_usage") or "")
     try:
@@ -1618,12 +2550,67 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
         except (TypeError, ValueError):
             trip_region_id = None
 
+    if doc_type == "WORK_LOG":
+        wl_date = (work_date or datetime.now().strftime("%Y-%m-%d"))[:10]
+        ok, msg = can_submit_work_log(
+            db,
+            user,
+            wl_date,
+            schedule_cls=Schedule,
+            trip_member_cls=ScheduleTripMember,
+            document_cls=Document,
+            worklog_cls=WorkLog,
+            entry_cls=WorkScheduleEntry,
+        )
+        if not ok:
+            return RedirectResponse(
+                url="/doc/new?flash=" + quote(msg, safe=""),
+                status_code=303,
+            )
+    elif doc_type == "TRIP_REPORT":
+        ok, msg = user_can_submit_trip_report(user)
+        if not ok:
+            return RedirectResponse(
+                url="/doc/new?flash=" + quote(msg, safe=""),
+                status_code=303,
+            )
+    elif doc_type in ("EARLY_ARRIVAL", "WEEKEND_WORK", "OVERTIME"):
+        od = (overtime_date or "")[:10]
+        if not od:
+            return RedirectResponse(
+                url="/doc/new?doc_type=" + doc_type + "&flash=" + quote("근무 일자를 입력하세요.", safe=""),
+                status_code=303,
+            )
+
+    if doc_type == "LEAVE" and leave_kind == OUTING_KIND_NAME:
+        if not (leave_start or "").strip():
+            return RedirectResponse(
+                url="/doc/new?flash=" + quote("외출 일자를 선택하세요.", safe=""),
+                status_code=303,
+            )
+        leave_end = leave_start
+        if not parse_leave_duration_minutes(leave_hours):
+            leave_hours = str(form.get("outing_duration") or "").strip() or f"{OUTING_UNIT_MINUTES}분"
     if doc_type == "LEAVE" and not title:
-        title = f"[휴가] {leave_kind} {leave_start}~{leave_end}".strip() or "[휴가] 신청"
+        if leave_kind == OUTING_KIND_NAME:
+            title = f"[외출] {leave_start} {leave_hours}".strip()
+        else:
+            title = f"[휴가] {leave_kind} {leave_start}~{leave_end}".strip() or "[휴가] 신청"
     elif doc_type == "EXPENSE" and not title:
         title = f"[지출결의] 합계 {expense_total}원" if expense_total else "[지출결의]"
     elif doc_type == "OVERTIME" and not title:
         title = f"[연장근무] {overtime_date} {overtime_start}-{overtime_end}".strip() or "[연장근무]"
+    elif doc_type == "EARLY_ARRIVAL":
+        overtime_date = str(form.get("early_date") or overtime_date or "").strip()[:10]
+        if not title:
+            title = f"[조기출근] {overtime_date} {work_hours}h".strip()
+    elif doc_type == "WEEKEND_WORK":
+        overtime_date = str(form.get("weekend_date") or overtime_date or "").strip()[:10]
+        if not title:
+            title = f"[주말근무] {overtime_date} {work_hours}h".strip()
+    elif doc_type == "TIMESHEET" and not title:
+        ym = str(form.get("timesheet_month") or datetime.now().strftime("%Y-%m"))[:7]
+        title = f"[근무표] {ym}"
     elif doc_type == "CERTIFICATE" and not title:
         title = f"[증명서] {cert_type}".strip() or "[증명서]"
     elif doc_type == "QUALITY" and not title:
@@ -1638,10 +2625,17 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
                 region_label = reg.name
         title = f"[출장복명서] {region_label} {destination} {trip_date}".strip() or "[출장복명서]"
 
+    bid = user_branch_id(user)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    bcode = branch.code if branch else "WJ"
+    if not doc_no:
+        doc_no = allocate_doc_no(db, branch_code=bcode, doc_type=doc_type, document_cls=Document)
+
     d = Document(
         title=title or "(제목 없음)",
         body=body,
         creator_id=user.id,
+        branch_id=bid,
         doc_type=doc_type,
         doc_no=doc_no,
         status="DRAFT",
@@ -1653,6 +2647,7 @@ async def doc_new_post(request: Request, db: Session = Depends(get_db), user: Us
         overtime_start=overtime_start,
         overtime_end=overtime_end,
         overtime_reason=overtime_reason,
+        work_hours=work_hours,
         cert_type=cert_type,
         cert_usage=cert_usage,
         expense_total=expense_total,
@@ -1801,17 +2796,58 @@ def doc_submit_get(request: Request, doc_id: int, db: Session = Depends(get_db),
         raise HTTPException(403, "상신은 작성자만 가능합니다.")
     if str(doc.status) != "DRAFT":
         return RedirectResponse(url=f"/doc/{doc_id}", status_code=303)
-    users = db.query(User).filter(User.is_active == True, User.id != user.id).order_by(User.name).all()
-    if not users:
-        users = db.query(User).filter(User.is_active == True).order_by(User.name).all()
+    doc_type = str(doc.doc_type or "")
+    worklog = None
+    work_log_team_users: List[User] = []
+    work_log_sorted_ids: List[int] = []
+    if doc_type == "WORK_LOG":
+        worklog = db.query(WorkLog).filter(WorkLog.doc_id == doc.id).first()
+        wl_date = (worklog.work_date if worklog else "") or datetime.now().strftime("%Y-%m-%d")
+        bid = user_branch_id(user)
+        mgrs = work_log_manager_users(
+            db, bid, wl_date, user_cls=User, grade_cls=Grade, schedule_cls=Schedule
+        )
+        work_log_team_users = mgrs + ([user] if user not in mgrs else [])
+        work_log_sorted_ids = _sort_user_ids_by_grade(db, [u.id for u in mgrs])
+    users = approver_candidate_users(
+        db, user, user_cls=User, grade_cls=Grade, exclude_user_id=int(user.id)
+    )
+    auto_trip = doc_type == "TRIP_REPORT"
+    auto_work_log = doc_type == "WORK_LOG"
+    grade_tier = doc_type == "WORK_LOG"
+    trip_team_users: List[User] = []
+    trip_sorted_ids: List[int] = []
+    if auto_trip:
+        trip_team_users = _trip_report_approval_users(db, user, exclude_user_id=int(doc.creator_id))
+        trip_sorted_ids = _sort_user_ids_by_grade(db, [u.id for u in trip_team_users])
+    grades_ordered = _grades_list_query(db).filter(Grade.is_active == True).all()
     return templates.TemplateResponse(
         "doc_submit.html",
-        {"request": request, "user": user, "doc": doc, "users": users, "doctype_ko": doctype_ko},
+        {
+            "request": request,
+            "user": user,
+            "doc": doc,
+            "users": users,
+            "doctype_ko": doctype_ko,
+            "auto_trip": auto_trip,
+            "auto_work_log": auto_work_log,
+            "grade_tier": grade_tier,
+            "work_log_team_users": work_log_team_users,
+            "work_log_sorted_ids": work_log_sorted_ids,
+            "worklog": worklog,
+            "work_log_min_grade": WORK_LOG_MIN_APPROVER_GRADE,
+            "work_log_max_grade": WORK_LOG_MAX_APPROVER_GRADE,
+            "trip_team_users": trip_team_users,
+            "trip_sorted_ids": trip_sorted_ids,
+            "trip_dept_label": _trip_report_approval_dept_label(),
+            "grades_ordered": grades_ordered,
+            "approval_guide": approval_guide_for(doc_type),
+        },
     )
 
 
 @app.post("/doc/{doc_id}/submit")
-def doc_submit_post(
+async def doc_submit_post(
     request: Request,
     doc_id: int,
     mode: str = Form("SEQUENTIAL"),
@@ -1831,49 +2867,123 @@ def doc_submit_post(
     if str(doc.status) != "DRAFT":
         return RedirectResponse(url=f"/doc/{doc_id}", status_code=303)
 
-    raw_ids = [approver1, approver2, approver3, approver4, approver5]
-    ids: List[int] = []
-    for x in raw_ids:
-        s = str(x or "").strip()
-        if not s:
-            continue
-        try:
-            uid = int(s)
-        except ValueError:
-            continue
-        if uid not in ids:
-            ids.append(uid)
+    doc_type = str(doc.doc_type or "")
+    if doc_type == "WORK_LOG":
+        worklog = db.query(WorkLog).filter(WorkLog.doc_id == doc.id).first()
+        wl_date = (worklog.work_date if worklog else "") or datetime.now().strftime("%Y-%m-%d")
+        ids = _work_log_default_approver_ids(db, doc, user, wl_date)
+    else:
+        form = await request.form()
+        ids = _parse_submit_approver_ids(form)
+        if not ids:
+            for x in (approver1, approver2, approver3, approver4, approver5):
+                s = str(x or "").strip()
+                if not s:
+                    continue
+                try:
+                    uid = int(s)
+                except ValueError:
+                    continue
+                if uid not in ids:
+                    ids.append(uid)
 
+    if doc_type == "TRIP_REPORT":
+        ids = _trip_report_default_approver_ids(db, doc, user)
+
+    allowed_approver_ids = set(
+        approver_candidate_ids(db, user, user_cls=User, grade_cls=Grade, exclude_user_id=int(user.id))
+    )
+    if doc_type == "WORK_LOG":
+        bid = user_branch_id(user)
+        allowed_approver_ids = {int(user.id)}
+        for u in work_log_manager_users(
+            db, bid, wl_date, user_cls=User, grade_cls=Grade, schedule_cls=Schedule
+        ):
+            allowed_approver_ids.add(int(u.id))
     clean_ids: List[int] = []
     for uid in ids:
+        if uid not in allowed_approver_ids:
+            continue
         u = db.query(User).filter(User.id == uid, User.is_active == True).first()
         if u and uid not in clean_ids:
             clean_ids.append(uid)
 
+    def _submit_ctx(extra: dict | None = None):
+        wl = db.query(WorkLog).filter(WorkLog.doc_id == doc.id).first()
+        wl_date = (wl.work_date if wl else "") or datetime.now().strftime("%Y-%m-%d")
+        bid = user_branch_id(user)
+        mgrs = work_log_manager_users(
+            db, bid, wl_date, user_cls=User, grade_cls=Grade, schedule_cls=Schedule
+        )
+        base = {
+            "request": request,
+            "user": user,
+            "doc": doc,
+            "users": approver_candidate_users(
+                db, user, user_cls=User, grade_cls=Grade, exclude_user_id=int(user.id)
+            ),
+            "doctype_ko": doctype_ko,
+            "auto_trip": doc_type == "TRIP_REPORT",
+            "auto_work_log": doc_type == "WORK_LOG",
+            "grade_tier": doc_type == "WORK_LOG",
+            "work_log_team_users": mgrs,
+            "work_log_sorted_ids": _sort_user_ids_by_grade(db, [u.id for u in mgrs]),
+            "worklog": wl,
+            "work_log_min_grade": WORK_LOG_MIN_APPROVER_GRADE,
+            "work_log_max_grade": WORK_LOG_MAX_APPROVER_GRADE,
+            "trip_team_users": _trip_report_approval_users(db, user, exclude_user_id=int(doc.creator_id)),
+            "trip_sorted_ids": _trip_report_default_approver_ids(db, doc, user),
+            "trip_dept_label": _trip_report_approval_dept_label(),
+            "grades_ordered": _grades_list_query(db).filter(Grade.is_active == True).all(),
+            "depts_ordered": _active_departments(db),
+            "approval_guide": approval_guide_for(doc_type),
+        }
+        if extra:
+            base.update(extra)
+        return base
+
     if not clean_ids:
+        err = (
+            f"「{_trip_report_approval_dept_label()}」 부서에 활성 사용자가 없습니다. 부서·사용자 관리를 확인하세요."
+            if doc_type == "TRIP_REPORT"
+            else (
+                "업무일지 결재 대상이 없습니다. 동일 부서에 활성 사용자가 있는지 확인하세요."
+                if doc_type == "WORK_LOG"
+                else "결재자를 1명 이상 선택하세요."
+            )
+        )
         return templates.TemplateResponse(
             "doc_submit.html",
-            {"request": request, "user": user, "doc": doc, "users": db.query(User).filter(User.is_active == True).order_by(User.name).all(), "doctype_ko": doctype_ko, "error": "결재자를 1명 이상 선택하세요."},
+            {**_submit_ctx({"error": err})},
             status_code=400,
         )
 
-    mode = "PARALLEL" if str(mode).upper() == "PARALLEL" else "SEQUENTIAL"
-    doc.mode = mode
+    if doc_type == "WORK_LOG":
+        doc.mode = "GRADE_TIER"
+    elif doc_type == "TRIP_REPORT":
+        doc.mode = "SEQUENTIAL"
+    else:
+        doc.mode = "PARALLEL" if str(mode).upper() == "PARALLEL" else "SEQUENTIAL"
 
-    db.query(Approver).filter(Approver.doc_id == doc.id).delete()
-    created: List[Approver] = []
-    for i, uid in enumerate(clean_ids, start=1):
-        action = "WAITING"
-        if mode == "PARALLEL":
-            action = "PENDING"
-        elif mode == "SEQUENTIAL" and i == 1:
-            action = "PENDING"
-        ap = Approver(doc_id=doc.id, approver_id=uid, order_no=i, action=action)
-        db.add(ap)
-        created.append(ap)
+    created = _create_doc_approvers(db, doc, clean_ids, submitter=user)
 
-    doc.status = "IN_REVIEW"
-    db.add(EventLog(doc_id=doc.id, user_id=user.id, event="SUBMIT", note=f"상신 mode={mode}"))
+    if created and all(a.action == "APPROVED" for a in created):
+        doc.status = "APPROVED_FINAL"
+    else:
+        doc.status = "IN_REVIEW"
+    if doc_type == "TIMESHEET":
+        tm = db.query(WorkTimesheetMonth).filter(WorkTimesheetMonth.doc_id == doc.id).first()
+        if tm:
+            tm.status = "IN_REVIEW"
+            tm.updated_at = now()
+    db.add(
+        EventLog(
+            doc_id=doc.id,
+            user_id=user.id,
+            event="SUBMIT",
+            note=f"상신 mode={doc.mode} approvers={len(created)}",
+        )
+    )
     db.flush()
 
     _run_auto_delegation(db, doc, created)
@@ -1992,56 +3102,30 @@ def file_history(doc_id: int, db: Session = Depends(get_db), user: User = Depend
 def _perform_single_approve(db: Session, user: User, doc: Document) -> Tuple[bool, str]:
     if str(doc.status) != "IN_REVIEW":
         return False, "not_pending"
-    if bool(getattr(user, 'is_admin', False)):
-        my_ap = (
-            db.query(Approver)
-            .filter(Approver.doc_id == doc.id, Approver.action == "PENDING")
-            .order_by(Approver.order_no.asc())
-            .first()
-        )
-        if not my_ap:
-            return False, "not_pending"
+    allowed_ids = [user.id] + [d.id for d in db.query(User).filter(User.delegate_id == user.id).all()]
+    pending_list = current_pending_approvers(db, doc)
+    if not pending_list:
+        return False, "not_pending"
+    if bool(getattr(user, "is_admin", False)):
+        my_ap = pending_list[0]
     else:
         if not can_approve_doc(user, doc, db):
             return False, "no_permission"
-        allowed_ids = [user.id] + [d.id for d in db.query(User).filter(User.delegate_id == user.id).all()]
-        my_ap = (
-            db.query(Approver)
-            .filter(Approver.doc_id == doc.id, Approver.approver_id.in_(allowed_ids), Approver.action == "PENDING")
-            .order_by(Approver.order_no.asc())
-            .first()
-        )
+        my_ap = next((p for p in pending_list if p.approver_id in allowed_ids), None)
         if not my_ap:
             return False, "not_pending"
     my_ap.action = "APPROVED"
     my_ap.acted_at = now()
     db.add(EventLog(doc_id=doc.id, user_id=user.id, event="APPROVED", note=f"승인: {user.name}"))
-    if str(doc.mode) == "SEQUENTIAL":
-        nxt = (
+    if str(doc.mode) in ("SEQUENTIAL", "GRADE_TIER") or _uses_grade_tier_approval(doc):
+        tier_no = int(my_ap.order_no)
+        tier_rows = (
             db.query(Approver)
-            .filter(Approver.doc_id == doc.id, Approver.action == "WAITING")
-            .order_by(Approver.order_no.asc())
-            .first()
+            .filter(Approver.doc_id == doc.id, Approver.order_no == tier_no)
+            .all()
         )
-        if nxt:
-            nxt.action = "PENDING"
-            apply_auto_delegation_for_approver(
-                db,
-                nxt,
-                doc_id=int(doc.id),
-                doc_title=str(doc.title or ""),
-                doc_link=f"/doc/{doc.id}",
-                user_cls=User,
-                schedule_cls=Schedule,
-                event_log_cls=EventLog,
-                notify=_notify,
-            )
-            _notify(
-                db,
-                int(nxt.approver_id),
-                f"[결재요청] 「{doc.title}」 결재 차례입니다",
-                f"/doc/{doc.id}",
-            )
+        if all(a.action == "APPROVED" for a in tier_rows):
+            _promote_next_approval_tier(db, doc)
     update_doc_status_after_action(db, doc)
     db.refresh(doc)
     if is_doc_final(str(doc.status)):
@@ -2083,6 +3167,8 @@ def doc_view(request: Request, doc_id: int, db: Session = Depends(get_db), user:
     )
     if not doc:
         raise HTTPException(404, "문서를 찾을 수 없습니다.")
+    if bool(getattr(doc, "is_deleted", False)):
+        raise HTTPException(404, "삭제된 문서입니다.")
     if not can_view_doc(user, doc, db):
         raise HTTPException(403, "열람 권한이 없습니다.")
     submitter = db.get(User, doc.creator_id)
@@ -2128,12 +3214,25 @@ def doc_view(request: Request, doc_id: int, db: Session = Depends(get_db), user:
         {
             "request": request, "user": user, "doc": doc,
             "submitter": submitter, "approvers": approvers, "can_act": can_act,
+            "can_delete": can_delete_doc(user, doc),
             "worklog": worklog, "trip_report": trip_report,
             "trip_credit_total": trip_credit_total,
             "trip_cash_total": trip_cash_total,
         },
     )
 
+
+@app.post("/doc/{doc_id}/delete")
+def doc_delete(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    doc = db.query(Document).filter(Document.id == doc_id, Document.is_deleted == False).first()
+    if not doc:
+        raise HTTPException(404, "문서를 찾을 수 없습니다.")
+    if not can_delete_doc(user, doc):
+        raise HTTPException(403, "삭제 권한이 없습니다. (업무일지는 작성자·관리자만 완료 후 삭제 가능)")
+    _soft_delete_document(db, doc, user)
+    db.commit()
+    msg = "업무일지가 삭제되었습니다." if str(doc.doc_type) == "WORK_LOG" else "문서가 삭제되었습니다."
+    return RedirectResponse(url="/dashboard?flash=" + quote(msg, safe=""), status_code=303)
 
 
 @app.post("/doc/{doc_id}/approve")
@@ -2229,6 +3328,7 @@ def search_page(
         attachment_cls=Attachment,
         status_ko=status_ko,
         doctype_ko=doctype_ko,
+        view_branch_id=_view_branch_id(request, user, db),
     )
     return templates.TemplateResponse(
         "search_results.html",
@@ -2249,11 +3349,36 @@ def search_page(
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    docs = sorted(visible_docs(db, user), key=lambda d: d.updated_at or d.created_at, reverse=True)
+    vb = _view_branch_id(request, user, db)
+    docs = sorted(
+        visible_docs(db, user, view_branch_id=vb),
+        key=lambda d: d.updated_at or d.created_at,
+        reverse=True,
+    )
     approvable_docs = [d.id for d in docs if d.status == "IN_REVIEW" and can_approve_doc(user, d, db)]
+    wl_duty = work_log_duty_status(
+        db,
+        user,
+        schedule_cls=Schedule,
+        trip_member_cls=ScheduleTripMember,
+        document_cls=Document,
+        worklog_cls=WorkLog,
+        entry_cls=WorkScheduleEntry,
+    )
+    tr_ok, _ = user_can_submit_trip_report(user)
+    flash_msg = request.query_params.get("flash") or request.cookies.get("flash")
     resp = templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "user": user, "docs": docs, "approvable_docs": approvable_docs, "flash": request.cookies.get("flash")},
+        {
+            "request": request,
+            "user": user,
+            "docs": docs,
+            "approvable_docs": approvable_docs,
+            "flash": flash_msg,
+            "work_log_duty": wl_duty,
+            "can_write_trip_report": tr_ok,
+            "trip_writer_dept_label": trip_report_writer_dept_label(),
+        },
     )
     return resp
 
@@ -2317,12 +3442,23 @@ def admin_index(_: User = Depends(require_admin)):
 
 @app.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    grades = db.query(Grade).filter(Grade.is_active == True).order_by(Grade.name).all()
-    users = db.query(User).order_by(User.id).all()
+    _ensure_departments_ready(db)
+    grades = _grades_list_query(db).filter(Grade.is_active == True).all()
+    depts = _active_departments(db)
+    branches = db.query(Branch).order_by(Branch.id).all()
+    users = db.query(User).options(joinedload(User.branch)).order_by(User.id).all()
     flash = request.query_params.get("flash", "")
     return templates.TemplateResponse(
         "admin_users.html",
-        {"request": request, "user": user, "grades": grades, "users": users, "flash": flash},
+        {
+            "request": request,
+            "user": user,
+            "grades": grades,
+            "depts": depts,
+            "branches": branches,
+            "users": users,
+            "flash": flash,
+        },
     )
 
 
@@ -2335,9 +3471,16 @@ async def admin_users_add(
     form = await request.form()
     username = str(form.get("username") or "").strip()
     name = str(form.get("name") or "").strip()
-    dept = str(form.get("dept") or "").strip()
+    dept_name = _resolve_user_dept(db, str(form.get("dept_id") or ""))
     temp_pw = str(form.get("temp_pw") or ADMIN_DEFAULT_PW).strip() or ADMIN_DEFAULT_PW
-    grade_name = _resolve_user_grade(db, str(form.get("grade_id") or ""), str(form.get("grade") or ""))
+    grade_name = _resolve_user_grade(db, str(form.get("grade_id") or ""))
+    branch_id = default_branch_id()
+    try:
+        branch_id = int(str(form.get("branch_id") or "").strip() or "1")
+    except ValueError:
+        branch_id = default_branch_id()
+    if not db.query(Branch).filter(Branch.id == branch_id).first():
+        branch_id = default_branch_id()
     is_admin = _is_truthy_admin(form.get("is_admin"))
 
     if not username or not name:
@@ -2348,8 +3491,9 @@ async def admin_users_add(
     u = User(
         username=username,
         name=name,
-        dept=dept,
+        dept=dept_name,
         grade=grade_name,
+        branch_id=branch_id,
         is_admin=is_admin,
         is_active=True,
         password_hash=hash_pw(temp_pw),
@@ -2402,19 +3546,24 @@ async def admin_users_import_csv(
         if db.query(User).filter(User.username == username).first():
             skipped += 1
             continue
-        dept = str(row.get(norm.get("dept", ""), "") or "").strip() if "dept" in norm else ""
+        dept_cell = str(row.get(norm.get("dept", ""), "") or "").strip() if "dept" in norm else ""
+        dept_name = _lookup_dept_name(db, dept_cell)
         grade_cell = str(row.get(norm.get("grade", ""), "") or "").strip() if "grade" in norm else ""
         grade_name = _lookup_grade_name(db, grade_cell)
         is_admin = False
         if "is_admin" in norm:
             is_admin = _is_truthy_admin(row.get(norm["is_admin"]))
+        branch_id = default_branch_id()
+        if "branch" in norm:
+            branch_id = _resolve_branch_id(db, str(row.get(norm["branch"]) or ""))
 
         db.add(
             User(
                 username=username,
                 name=name,
-                dept=dept,
+                dept=dept_name,
                 grade=grade_name,
+                branch_id=branch_id,
                 is_admin=is_admin,
                 is_active=True,
                 password_hash=hash_pw(ADMIN_DEFAULT_PW),
@@ -2483,10 +3632,12 @@ def admin_user_edit_get(
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
         raise HTTPException(404, "사용자를 찾을 수 없습니다.")
-    grades = db.query(Grade).filter(Grade.is_active == True).order_by(Grade.name).all()
+    grades = _grades_list_query(db).filter(Grade.is_active == True).all()
+    depts = _active_departments(db)
+    branches = db.query(Branch).order_by(Branch.id).all()
     return templates.TemplateResponse(
         "admin_user_edit.html",
-        {"request": request, "user": user, "u": u, "grades": grades},
+        {"request": request, "user": user, "u": u, "grades": grades, "depts": depts, "branches": branches},
     )
 
 
@@ -2517,8 +3668,14 @@ async def admin_user_edit_post(
         return _admin_redirect_users("마지막 관리자는 비활성화할 수 없습니다.")
 
     target.name = name
-    target.dept = str(form.get("dept") or "").strip()
-    target.grade = _resolve_user_grade(db, str(form.get("grade_id") or ""), str(form.get("grade") or ""))
+    target.dept = _resolve_user_dept(db, str(form.get("dept_id") or ""))
+    target.grade = _resolve_user_grade(db, str(form.get("grade_id") or ""))
+    try:
+        bid = int(str(form.get("branch_id") or "").strip())
+        if db.query(Branch).filter(Branch.id == bid).first():
+            target.branch_id = bid
+    except ValueError:
+        pass
     target.is_admin = new_is_admin
     target.is_active = new_is_active
     target.must_change_pw = str(form.get("must_change_pw") or "0").strip() == "1"
@@ -2534,7 +3691,8 @@ async def admin_user_edit_post(
 
 @app.get("/admin/grades", response_class=HTMLResponse)
 def admin_grades(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    grades = db.query(Grade).order_by(Grade.id).all()
+    _normalize_grade_sort_orders(db)
+    grades = _grades_list_query(db).all()
     flash = request.query_params.get("flash", "")
     return templates.TemplateResponse(
         "admin_grades.html",
@@ -2553,13 +3711,33 @@ async def admin_grades_add(
         return _admin_redirect_grades("직급명을 입력하세요.")
     if db.query(Grade).filter(Grade.name == name).first():
         return _admin_redirect_grades(f"이미 있는 직급입니다: {name}")
-    db.add(Grade(name=name, is_active=True))
+    db.add(Grade(name=name, is_active=True, sort_order=_next_grade_sort_order(db)))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         return _admin_redirect_grades("직급 등록에 실패했습니다.")
     return _admin_redirect_grades(f"직급 '{name}' 을(를) 등록했습니다.")
+
+
+@app.post("/admin/grades/{grade_id}/move-up")
+def admin_grades_move_up(
+    grade_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    _, msg = _move_grade_in_list(db, grade_id, -1)
+    return _admin_redirect_grades(msg)
+
+
+@app.post("/admin/grades/{grade_id}/move-down")
+def admin_grades_move_down(
+    grade_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    _, msg = _move_grade_in_list(db, grade_id, 1)
+    return _admin_redirect_grades(msg)
 
 
 @app.post("/admin/grades/{grade_id}/delete")
@@ -2590,6 +3768,128 @@ def admin_grades_restore(
     g.is_active = True
     db.commit()
     return _admin_redirect_grades(f"직급 '{g.name}' 을(를) 복구했습니다.")
+
+
+@app.get("/admin/depts", response_class=HTMLResponse)
+def admin_depts(request: Request, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    _ensure_departments_ready(db)
+    _normalize_dept_sort_orders(db)
+    depts = _departments_list_query(db).all()
+    flash = request.query_params.get("flash", "")
+    return templates.TemplateResponse(
+        "admin_depts.html",
+        {"request": request, "user": user, "depts": depts, "flash": flash},
+    )
+
+
+@app.post("/admin/depts/add")
+async def admin_depts_add(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+    name: str = Form(...),
+):
+    name = (name or "").strip()
+    if not name:
+        return _admin_redirect_depts("부서명을 입력하세요.")
+    if db.query(Department).filter(Department.name == name).first():
+        return _admin_redirect_depts(f"이미 있는 부서입니다: {name}")
+    db.add(Department(name=name, is_active=True, sort_order=_next_dept_sort_order(db)))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _admin_redirect_depts("부서 등록에 실패했습니다.")
+    return _admin_redirect_depts(f"부서 '{name}' 을(를) 등록했습니다.")
+
+
+@app.post("/admin/depts/{dept_id}/move-up")
+def admin_depts_move_up(
+    dept_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    ok, msg = _move_dept_in_list(db, dept_id, -1)
+    return _admin_redirect_depts(msg)
+
+
+@app.post("/admin/depts/{dept_id}/move-down")
+def admin_depts_move_down(
+    dept_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    ok, msg = _move_dept_in_list(db, dept_id, 1)
+    return _admin_redirect_depts(msg)
+
+
+@app.post("/admin/depts/{dept_id}/delete")
+def admin_depts_delete(
+    dept_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    d = db.query(Department).filter(Department.id == dept_id).first()
+    if not d:
+        return _admin_redirect_depts("부서를 찾을 수 없습니다.")
+    d.is_active = False
+    for u in db.query(User).filter(User.dept == d.name).all():
+        u.dept = ""
+    db.commit()
+    return _admin_redirect_depts(f"부서 '{d.name}' 을(를) 비활성화했습니다.")
+
+
+@app.post("/admin/depts/{dept_id}/restore")
+def admin_depts_restore(
+    dept_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    d = db.query(Department).filter(Department.id == dept_id).first()
+    if not d:
+        return _admin_redirect_depts("부서를 찾을 수 없습니다.")
+    d.is_active = True
+    db.commit()
+    return _admin_redirect_depts(f"부서 '{d.name}' 을(를) 복구했습니다.")
+
+
+@app.get("/admin/nav", response_class=HTMLResponse)
+def admin_nav_settings_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    visibility = get_nav_visibility(db)
+    nav_items = [
+        {
+            "key": item["key"],
+            "label": item["label"],
+            "paths": list(item["paths"]),
+            "enabled": bool(visibility.get(item["key"], True)),
+        }
+        for item in NAV_ITEMS
+    ]
+    flash = request.query_params.get("flash", "")
+    return templates.TemplateResponse(
+        "admin_nav.html",
+        {
+            "request": request,
+            "user": user,
+            "nav_items": nav_items,
+            "flash": flash,
+        },
+    )
+
+
+@app.post("/admin/nav/save")
+async def admin_nav_settings_save(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    form = await request.form()
+    values = {item["key"]: f"nav_{item['key']}" in form for item in NAV_ITEMS}
+    save_nav_visibility(db, values)
+    return _admin_redirect_nav("메뉴 표시 설정을 저장했습니다.")
 
 
 @app.get("/my_profile", response_class=HTMLResponse)
@@ -2691,7 +3991,21 @@ def notifications_page(request: Request, db: Session = Depends(get_db), user: Us
 
 @app.get("/quality", response_class=HTMLResponse)
 def quality_list(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    docs = db.query(Document).filter(Document.doc_type == "QUALITY").order_by(Document.created_at.desc()).all()
+    vb = _view_branch_id(request, user, db)
+    allowed = visible_document_ids(
+        db,
+        user,
+        document_cls=Document,
+        approver_cls=Approver,
+        user_cls=User,
+        view_branch_id=vb,
+    )
+    q = db.query(Document).filter(Document.doc_type == "QUALITY", Document.is_deleted == False)
+    if not allowed:
+        q = q.filter(Document.id == -1)
+    else:
+        q = q.filter(Document.id.in_(list(allowed)))
+    docs = q.order_by(Document.created_at.desc()).all()
     return templates.TemplateResponse("quality_list.html", {"request": request, "user": user, "docs": docs})
 
 
@@ -2710,8 +4024,14 @@ import quality_fs as _qfs
 
 @app.get("/quality/library", response_class=HTMLResponse)
 def quality_library(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    tree = _qfs.scan_tree()
-    quality_docs = db.query(QualityDoc).order_by(QualityDoc.updated_at.desc()).limit(50).all()
+    bid = _view_branch_id(request, user, db)
+    tree = _qfs.scan_tree(branch_id=bid)
+    qd_q = (
+        db.query(QualityDoc)
+        .filter(QualityDoc.branch_id == bid)
+        .order_by(QualityDoc.updated_at.desc())
+    )
+    quality_docs = qd_q.limit(50).all()
     return templates.TemplateResponse("quality_library.html", {
         "request": request, "user": user,
         "tree": tree,
@@ -2721,7 +4041,7 @@ def quality_library(request: Request, db: Session = Depends(get_db), user: User 
 
 @app.get("/quality/file/view")
 def quality_file_view(request: Request, path: str = "", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    abs_path = _qfs.resolve_file_path(path)
+    abs_path = _qfs.resolve_file_path(path, branch_id=_view_branch_id(request, user, db))
     if not abs_path or not os.path.isfile(abs_path):
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
     ext = os.path.splitext(abs_path)[1].lower()
@@ -2745,7 +4065,7 @@ def quality_file_view(request: Request, path: str = "", db: Session = Depends(ge
 
 @app.get("/quality/file/download")
 def quality_file_download(request: Request, path: str = "", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    abs_path = _qfs.resolve_file_path(path)
+    abs_path = _qfs.resolve_file_path(path, branch_id=_view_branch_id(request, user, db))
     if not abs_path or not os.path.isfile(abs_path):
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
     from urllib.parse import quote
@@ -2772,13 +4092,24 @@ async def quality_revise(
     if not title.strip():
         title = f"[품질문서 개정] {doc_no}" if doc_no else "[품질문서 개정]"
 
-    prev_qd = db.query(QualityDoc).filter(QualityDoc.doc_no == doc_no).order_by(QualityDoc.rev_no.desc()).first()
+    bid = user_branch_id(user)
+    prev_qd = (
+        db.query(QualityDoc)
+        .filter(QualityDoc.doc_no == doc_no, QualityDoc.branch_id == bid)
+        .order_by(QualityDoc.rev_no.desc())
+        .first()
+    )
     new_rev = (prev_qd.rev_no + 1) if prev_qd else 1
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    bcode = branch.code if branch else "WJ"
+    if not (doc_no or "").strip():
+        doc_no = allocate_doc_no(db, branch_code=bcode, doc_type="QUALITY", document_cls=Document)
 
     d = Document(
         title=title.strip(),
         body=f"품질문서 재개정 (Rev.{new_rev})\n원본 경로: {original_path}",
         creator_id=user.id,
+        branch_id=bid,
         doc_type="QUALITY",
         doc_no=doc_no,
         rev=new_rev,
@@ -2809,6 +4140,7 @@ async def quality_revise(
         doc_no=doc_no,
         title=title.strip(),
         rev_no=new_rev,
+        branch_id=bid,
         file_path=file_path or original_path,
         original_filename=file.filename if (file and file.filename) else "",
         document_id=d.id,
@@ -2833,12 +4165,11 @@ def api_quality_history(
     """특정 문서번호의 전체 리비전 이력을 JSON으로 반환"""
     if not doc_no.strip():
         return {"items": []}
-    revisions = (
-        db.query(QualityDoc)
-        .filter(QualityDoc.doc_no == doc_no.strip())
-        .order_by(QualityDoc.rev_no.desc())
-        .all()
+    q = db.query(QualityDoc).filter(
+        QualityDoc.doc_no == doc_no.strip(),
+        QualityDoc.branch_id == _view_branch_id(request, user, db),
     )
+    revisions = q.order_by(QualityDoc.rev_no.desc()).all()
     items = []
     for r in revisions:
         att = None
@@ -2966,6 +4297,15 @@ def completed(request: Request, db: Session = Depends(get_db), user: User = Depe
             docs_query = docs_query.filter(Document.created_at < end_dt)
         except Exception:
             pass
+    docs_query = scope_completed_query(
+        db,
+        user,
+        docs_query,
+        document_cls=Document,
+        approver_cls=Approver,
+        user_cls=User,
+        view_branch_id=_view_branch_id(request, user, db),
+    )
     docs = docs_query.order_by(Document.created_at.desc()).all()
     # 템플릿이 기대하는 추가 속성(`submitter`, `final_approver`, `final_path`)을 문서 객체에 붙임
     for d in docs:
@@ -2994,11 +4334,14 @@ def accounting_dashboard(
     user: User = Depends(get_current_user),
 ):
     mode, date_from, date_to, ref = _parse_accounting_period(request)
+    bid = _resolve_accounting_branch_id(request, user, db)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    branch_label = branch.name if branch else ""
     try:
-        total_billing = _sum_trip_billing(db, date_from, date_to)
-        total_collection = _sum_collections(db, date_from, date_to)
-        receivable_balance = _cumulative_receivable(db, date_to)
-        flow_rows = _accounting_flow_rows(db, mode, date_from, date_to)
+        total_billing = _sum_trip_billing(db, date_from, date_to, branch_id=bid)
+        total_collection = _sum_collections(db, date_from, date_to, branch_id=bid)
+        receivable_balance = _cumulative_receivable(db, date_to, branch_id=bid)
+        flow_rows = _accounting_flow_rows(db, mode, date_from, date_to, branch_id=bid)
     except Exception as e:
         print(f"[accounting/dashboard] aggregate failed: {e}")
         import traceback
@@ -3042,6 +4385,13 @@ def accounting_dashboard(
             "flow_title": flow_title,
             "filter_year": request.query_params.get("year") or str(q_year),
             "filter_quarter": request.query_params.get("quarter") or str(q_num),
+            "branch_label": branch_label,
+            "accounting_branch_id": bid,
+            "branches": (
+                db.query(Branch).order_by(Branch.id).all()
+                if can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch)
+                else []
+            ),
         },
     )
 
@@ -3053,6 +4403,9 @@ def accounting_ledger(
     user: User = Depends(get_current_user),
 ):
     month_ref, month_start, month_end = _parse_ledger_month(request)
+    bid = _resolve_accounting_branch_id(request, user, db)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    branch_label = branch.name if branch else ""
     region_id_raw = request.query_params.get("region_id", "").strip()
     company_q = request.query_params.get("company", "").strip()
     region_id: Optional[int] = None
@@ -3062,13 +4415,13 @@ def accounting_ledger(
         except (ValueError, TypeError):
             region_id = None
     try:
-        regions = db.query(Region).order_by(Region.name.asc()).all()
+        regions = _regions_for_branch(db, bid)
     except Exception as e:
         print(f"[ledger] regions query failed: {e}")
         regions = []
     try:
         ledger_rows = _build_ledger_rows(
-            db, month_start, month_end, region_id=region_id, company_q=company_q
+            db, month_start, month_end, branch_id=bid, region_id=region_id, company_q=company_q
         )
     except Exception as e:
         print(f"[ledger] _build_ledger_rows failed: {e}")
@@ -3092,6 +4445,13 @@ def accounting_ledger(
             "regions": regions,
             "ledger_rows": ledger_rows,
             "totals": totals,
+            "branch_label": branch_label,
+            "accounting_branch_id": bid,
+            "branches": (
+                db.query(Branch).order_by(Branch.id).all()
+                if can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch)
+                else []
+            ),
         },
     )
 
@@ -3122,14 +4482,16 @@ async def api_collections_create(
         raise HTTPException(400, "수금일을 입력하세요.")
     if amount <= 0:
         raise HTTPException(400, "수금액을 입력하세요.")
-    if not db.query(Region).filter(Region.name == region_name).first():
-        raise HTTPException(400, "등록되지 않은 지역입니다. 지역 마스터에 먼저 등록하세요.")
+    bid = user_branch_id(user)
+    if not db.query(Region).filter(Region.name == region_name, Region.branch_id == bid).first():
+        raise HTTPException(400, "등록되지 않은 지역입니다. 출장/회계 지역을 먼저 등록하세요.")
     row = Collection(
         company_name=company_name,
         region_name=region_name,
         amount=amount,
         collection_date=collection_date,
         note=note,
+        branch_id=bid,
     )
     db.add(row)
     db.commit()
@@ -3144,17 +4506,372 @@ async def api_collections_create(
     }
 
 
+def _can_edit_schedule_row(editor: User, target_user_id: int) -> bool:
+    if bool(getattr(editor, "is_admin", False)):
+        return True
+    return int(editor.id) == int(target_user_id)
+
+
+def _work_schedule_users(db: Session, branch_id: int) -> List[User]:
+    users = (
+        db.query(User)
+        .filter(User.branch_id == int(branch_id), User.is_active == True)
+        .order_by(User.dept, User.name)
+        .all()
+    )
+    return [
+        u
+        for u in users
+        if not is_excluded_from_work_schedule(db, Grade, getattr(u, "grade", "") or "")
+    ]
+
+
+@app.get("/work-schedule", response_class=HTMLResponse)
+def work_schedule_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    bid = _view_branch_id(request, user, db)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    week_raw = request.query_params.get("week", "").strip()
+    anchor = ws_parse_ymd(week_raw) if week_raw else date.today()
+    if not anchor:
+        anchor = date.today()
+    week_mon = monday_of_week(anchor)
+    dates = week_dates(week_mon)
+    date_keys = [d.isoformat() for d in dates]
+
+    entries = (
+        db.query(WorkScheduleEntry)
+        .filter(
+            WorkScheduleEntry.branch_id == bid,
+            WorkScheduleEntry.work_date.in_(date_keys),
+        )
+        .all()
+    )
+    by_user_date: dict = {}
+    for e in entries:
+        by_user_date.setdefault(int(e.user_id), {})[e.work_date] = e
+
+    staff = _work_schedule_users(db, bid)
+    rows = []
+    for u in staff:
+        u_entries = by_user_date.get(int(u.id), {})
+        leave_map = leave_off_labels_for_user(
+            db,
+            int(u.id),
+            date_keys,
+            schedule_cls=Schedule,
+            document_cls=Document,
+        )
+        days = [
+            build_week_row(
+                u_entries.get(dk),
+                d,
+                auto_off_label=leave_map.get(dk, ""),
+            )
+            for dk, d in zip(date_keys, dates)
+        ]
+        total = week_total_hours(days)
+        payroll = week_payroll_sums(days)
+        rows.append({
+            "user": u,
+            "user_id": int(u.id),
+            "days": days,
+            "week_total": total,
+            "payroll": payroll,
+            "over_52": total > WEEKLY_MAX_HOURS,
+            "can_edit": _can_edit_schedule_row(user, int(u.id)),
+        })
+
+    year_month = week_mon.strftime("%Y-%m")
+    tm = (
+        db.query(WorkTimesheetMonth)
+        .filter(WorkTimesheetMonth.user_id == user.id, WorkTimesheetMonth.year_month == year_month)
+        .first()
+    )
+    can_switch = can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch)
+    prev_week = (week_mon - timedelta(days=7)).isoformat()
+    next_week = (week_mon + timedelta(days=7)).isoformat()
+
+    return templates.TemplateResponse(
+        "work_schedule.html",
+        {
+            "request": request,
+            "user": user,
+            "branch_label": branch.name if branch else "",
+            "branch_id": bid,
+            "branches": db.query(Branch).order_by(Branch.id).all() if can_switch else [],
+            "can_switch_branch": can_switch,
+            "week_monday": week_mon.isoformat(),
+            "week_sunday": (week_mon + timedelta(days=6)).isoformat(),
+            "prev_week": prev_week,
+            "next_week": next_week,
+            "week_dates": date_keys,
+            "schedule_rows": rows,
+            "base_day_hours": BASE_DAY_HOURS,
+            "weekly_max_hours": WEEKLY_MAX_HOURS,
+            "off_reasons": OFF_REASONS,
+            "year_month": year_month,
+            "timesheet_month": tm,
+            "flash": request.query_params.get("flash", ""),
+        },
+    )
+
+
+@app.post("/work-schedule/save")
+async def work_schedule_save(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    form = await request.form()
+    try:
+        target_uid = int(str(form.get("user_id") or user.id))
+    except (TypeError, ValueError):
+        target_uid = int(user.id)
+    if not _can_edit_schedule_row(user, target_uid):
+        raise HTTPException(403, "본인 근무표만 수정할 수 있습니다.")
+    work_date = str(form.get("work_date") or "")[:10]
+    if not work_date:
+        raise HTTPException(400, "일자가 필요합니다.")
+    target_u = db.get(User, target_uid)
+    if not target_u:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다.")
+    is_off = str(form.get("is_day_off") or "").lower() in ("1", "on", "true", "yes")
+    off_reason = str(form.get("off_reason") or "휴무").strip()[:30] if is_off else None
+    if is_off:
+        upsert_schedule_entry(
+            db,
+            entry_cls=WorkScheduleEntry,
+            user_id=target_uid,
+            branch_id=int(getattr(target_u, "branch_id", None) or 1),
+            work_date=work_date,
+            is_day_off=True,
+            off_reason=off_reason,
+            note=str(form.get("note") or ""),
+        )
+    else:
+        upsert_schedule_entry(
+            db,
+            entry_cls=WorkScheduleEntry,
+            user_id=target_uid,
+            branch_id=int(getattr(target_u, "branch_id", None) or 1),
+            work_date=work_date,
+            is_day_off=False,
+            early_hours=form.get("early_hours"),
+            overtime_hours=form.get("overtime_hours"),
+            weekend_hours=form.get("weekend_hours"),
+            note=str(form.get("note") or ""),
+        )
+    db.commit()
+    week = str(form.get("week") or monday_of_week(ws_parse_ymd(work_date) or date.today()).isoformat())
+    return RedirectResponse(
+        url=f"/work-schedule?week={week}&flash=" + quote("저장되었습니다.", safe=""),
+        status_code=303,
+    )
+
+
+@app.post("/work-schedule/month/submit")
+async def work_schedule_month_submit(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """월간 근무표 결재 상신 — TIMESHEET 문서 생성 후 결재선 지정."""
+    form = await request.form()
+    year_month = str(form.get("year_month") or datetime.now().strftime("%Y-%m"))[:7]
+    week = str(form.get("week") or "").strip()
+    existing = (
+        db.query(WorkTimesheetMonth)
+        .filter(WorkTimesheetMonth.user_id == user.id, WorkTimesheetMonth.year_month == year_month)
+        .first()
+    )
+    if existing and existing.doc_id:
+        doc = db.get(Document, existing.doc_id)
+        if doc and str(doc.status) not in ("DRAFT", "REJECTED"):
+            return RedirectResponse(
+                url="/work-schedule?week=" + quote(week or monday_of_week(date.today()).isoformat(), safe="")
+                + "&flash=" + quote("이미 결재 진행 중이거나 완료된 근무표입니다.", safe=""),
+                status_code=303,
+            )
+
+    bid = user_branch_id(user)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    bcode = branch.code if branch else "WJ"
+    body = build_timesheet_doc_body(db, user, year_month, entry_cls=WorkScheduleEntry)
+    title = f"[근무표] {year_month}"
+    doc_no = allocate_doc_no(db, branch_code=bcode, doc_type="TIMESHEET", document_cls=Document)
+    doc = Document(
+        title=title,
+        body=body,
+        creator_id=user.id,
+        branch_id=bid,
+        doc_type="TIMESHEET",
+        doc_no=doc_no,
+        status="DRAFT",
+    )
+    db.add(doc)
+    db.flush()
+    if existing:
+        existing.doc_id = doc.id
+        existing.status = "DRAFT"
+        existing.branch_id = bid
+        existing.updated_at = now()
+    else:
+        db.add(
+            WorkTimesheetMonth(
+                user_id=user.id,
+                branch_id=bid,
+                year_month=year_month,
+                status="DRAFT",
+                doc_id=doc.id,
+            )
+        )
+    db.add(
+        EventLog(
+            doc_id=doc.id,
+            user_id=user.id,
+            event="TIMESHEET_DRAFT",
+            note=f"월간 근무표 {year_month} 작성",
+        )
+    )
+    db.commit()
+    return RedirectResponse(url=f"/doc/{doc.id}/submit", status_code=303)
+
+
+@app.get("/leave/status", response_class=HTMLResponse)
+def leave_status_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """지사별 당해 연도(1/1~12/31) 휴가·연차 사용 현황."""
+    today = datetime.now()
+    year_raw = request.query_params.get("year", str(today.year)).strip()
+    try:
+        year = int(year_raw)
+    except (TypeError, ValueError):
+        year = today.year
+    if year < 2000 or year > 2100:
+        year = today.year
+
+    bid = _view_branch_id(request, user, db)
+    branch = db.query(Branch).filter(Branch.id == bid).first()
+    branch_label = branch.name if branch else ""
+
+    stats = build_branch_leave_status(
+        db, bid, year, user_cls=User, document_cls=Document
+    )
+    can_switch = can_switch_branch_view(db, user, grade_cls=Grade, branch_cls=Branch)
+    branches = db.query(Branch).order_by(Branch.id).all() if can_switch else []
+
+    return templates.TemplateResponse(
+        "leave_status.html",
+        {
+            "request": request,
+            "user": user,
+            "year": year,
+            "year_label": stats["year_label"],
+            "branch_label": branch_label,
+            "branch_id": bid,
+            "branches": branches,
+            "can_switch_branch": can_switch,
+            "rows": stats["rows"],
+            "totals": stats["totals"],
+            "pending_total": stats["pending_total"],
+            "work_day_hours": WORK_DAY_HOURS,
+            "outing_unit_minutes": OUTING_UNIT_MINUTES,
+            "outing_blocks_per_day": int(work_day_minutes() / OUTING_UNIT_MINUTES),
+        },
+    )
+
+
 @app.get("/calendar", response_class=HTMLResponse)
 def calendar_view(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return templates.TemplateResponse("calendar.html", {
-        "request": request, "user": user, "me": user,
-        "schedule_types": SCHEDULE_TYPES,
-    })
+    bid = user_branch_id(user)
+    branch_users = (
+        db.query(User)
+        .filter(User.is_active == True, User.branch_id == bid)
+        .order_by(User.dept, User.name)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "calendar.html",
+        {
+            "request": request,
+            "user": user,
+            "me": user,
+            "schedule_types": SCHEDULE_TYPES,
+            "branch_users": branch_users,
+        },
+    )
 
 
 @app.get("/me", response_class=HTMLResponse)
-def me_view(request: Request, user: User = Depends(get_current_user)):
-    return templates.TemplateResponse("me.html", {"request": request, "user": user})
+def me_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    users = (
+        db.query(User)
+        .filter(User.is_active == True, User.id != user.id)
+        .order_by(User.name)
+        .all()
+    )
+    grades = _grades_list_query(db).filter(Grade.is_active == True).all()
+    depts = _active_departments(db)
+    branches = db.query(Branch).order_by(Branch.id).all()
+    flash = request.query_params.get("flash", "")
+    return templates.TemplateResponse(
+        "me.html",
+        {
+            "request": request,
+            "user": user,
+            "users": users,
+            "grades": grades,
+            "depts": depts,
+            "branches": branches,
+            "flash": flash,
+        },
+    )
+
+
+@app.post("/me")
+async def me_update(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        return RedirectResponse(url="/me?flash=" + quote("이름을 입력하세요.", safe=""), status_code=303)
+
+    user.name = name
+    user.dept = _resolve_user_dept(db, str(form.get("dept_id") or ""))
+    user.grade = _resolve_user_grade(db, str(form.get("grade_id") or ""))
+
+    delegate_raw = str(form.get("delegate_id") or "").strip()
+    if not delegate_raw:
+        user.delegate_id = None
+    else:
+        try:
+            did = int(delegate_raw)
+        except ValueError:
+            did = 0
+        if did == user.id:
+            user.delegate_id = None
+        elif did:
+            duser = db.query(User).filter(User.id == did, User.is_active == True).first()
+            user.delegate_id = duser.id if duser else None
+        else:
+            user.delegate_id = None
+
+    db.commit()
+    return RedirectResponse(url="/me?flash=" + quote("저장했습니다.", safe=""), status_code=303)
 
 
 @app.get("/post/{post_id}", response_class=HTMLResponse)
@@ -3168,12 +4885,69 @@ def post_view(request: Request, post_id: int, db: Session = Depends(get_db), use
 
 @app.get("/org", response_class=HTMLResponse)
 def org_chart(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    # build org dict by dept
-    users = db.query(User).filter(User.is_active == True).order_by(User.dept).all()
-    org = {}
+    """전 지사 통합 조직도 — 지사별 섹션 → 부서별 카드."""
+    branches = (
+        db.query(Branch)
+        .order_by(Branch.is_headquarters.desc(), Branch.id.asc())
+        .all()
+    )
+    users = (
+        db.query(User)
+        .options(joinedload(User.branch))
+        .filter(User.is_active == True)
+        .order_by(User.branch_id, User.dept, User.name)
+        .all()
+    )
+    by_branch: dict[int, dict[str, list]] = {}
     for u in users:
-        org.setdefault(u.dept or "기타", []).append(u)
-    return templates.TemplateResponse("org_chart.html", {"request": request, "user": user, "org_dict": org, "me": user})
+        bid = int(getattr(u, "branch_id", None) or default_branch_id())
+        by_branch.setdefault(bid, {})
+        by_branch[bid].setdefault(u.dept or "기타", []).append(u)
+
+    org_sections: list[dict] = []
+    seen_branch_ids = set()
+    for branch in branches:
+        dept_dict = by_branch.get(branch.id)
+        if not dept_dict:
+            continue
+        seen_branch_ids.add(branch.id)
+        depts: list[dict] = []
+        for dept_name in sorted(dept_dict.keys()):
+            members = list(dept_dict[dept_name])
+            members.sort(
+                key=lambda u: (
+                    _grade_sort_order_for_name(db, u.grade or ""),
+                    (u.name or ""),
+                )
+            )
+            depts.append({"name": dept_name, "users": members})
+        org_sections.append({"branch": branch, "depts": depts})
+
+    for bid, dept_dict in by_branch.items():
+        if bid in seen_branch_ids:
+            continue
+        depts = []
+        for dept_name in sorted(dept_dict.keys()):
+            members = list(dept_dict[dept_name])
+            members.sort(
+                key=lambda u: (
+                    _grade_sort_order_for_name(db, u.grade or ""),
+                    (u.name or ""),
+                )
+            )
+            depts.append({"name": dept_name, "users": members})
+        fallback = db.query(Branch).filter(Branch.id == bid).first()
+        org_sections.append(
+            {
+                "branch": fallback or SimpleNamespace(id=bid, name=f"지사 #{bid}", code=""),
+                "depts": depts,
+            }
+        )
+
+    return templates.TemplateResponse(
+        "org_chart.html",
+        {"request": request, "user": user, "org_sections": org_sections, "me": user},
+    )
 
 
 def _notify(db: Session, user_id: int, title: str, link: str = ""):
@@ -3322,9 +5096,24 @@ def api_schedules(db: Session = Depends(get_db), user: User = Depends(get_curren
     schedules = db.query(Schedule).filter(Schedule.status == "ACTIVE").all()
     for s in schedules:
         u = db.get(User, s.user_id)
+        trip_rows = (
+            db.query(ScheduleTripMember)
+            .filter(ScheduleTripMember.schedule_id == s.id)
+            .all()
+        )
+        trip_names: List[str] = []
+        trip_ids: List[int] = []
+        for tm in trip_rows:
+            tu = db.get(User, tm.user_id)
+            trip_ids.append(int(tm.user_id))
+            if tu:
+                trip_names.append(tu.name)
+        title = s.title
+        if trip_names and str(s.schedule_type or "").startswith("TEAM_"):
+            title = f"{s.title} ({', '.join(trip_names)})"
         out.append({
             "id": f"sch_{s.id}",
-            "title": s.title,
+            "title": title,
             "start": s.start_date,
             "end": s.end_date,
             "allDay": True,
@@ -3338,6 +5127,8 @@ def api_schedules(db: Session = Depends(get_db), user: User = Depends(get_curren
                 "user_name": u.name if u else "",
                 "memo": s.memo or "",
                 "document_id": s.document_id,
+                "trip_user_ids": trip_ids,
+                "trip_user_names": trip_names,
                 "editable": (s.user_id == user.id or bool(user.is_admin)) and s.document_id is None,
             },
         })
@@ -3366,7 +5157,8 @@ def api_schedules(db: Session = Depends(get_db), user: User = Depends(get_curren
 
 
 @app.post("/api/schedules")
-def api_schedule_create(
+async def api_schedule_create(
+    request: Request,
     title: str = Form(...),
     start_date: str = Form(...),
     end_date: str = Form(""),
@@ -3376,6 +5168,7 @@ def api_schedule_create(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    form = await request.form()
     if not end_date:
         end_date = start_date
     if not color:
@@ -3391,6 +5184,26 @@ def api_schedule_create(
         memo=memo.strip(),
     )
     db.add(sch)
+    db.flush()
+    if str(schedule_type or "").startswith("TEAM_"):
+        bid = user_branch_id(user)
+        raw_ids = form.getlist("trip_user_ids") if hasattr(form, "getlist") else []
+        seen: set[int] = set()
+        for x in raw_ids:
+            try:
+                uid = int(str(x).strip())
+            except (TypeError, ValueError):
+                continue
+            if uid in seen:
+                continue
+            tu = (
+                db.query(User)
+                .filter(User.id == uid, User.is_active == True, User.branch_id == bid)
+                .first()
+            )
+            if tu:
+                seen.add(uid)
+                db.add(ScheduleTripMember(schedule_id=sch.id, user_id=uid))
     db.commit()
     return RedirectResponse(url="/calendar", status_code=303)
 
@@ -3404,6 +5217,9 @@ def api_schedule_delete(schedule_id: int, db: Session = Depends(get_db), user: U
         raise HTTPException(403, "권한이 없습니다.")
     if sch.document_id:
         raise HTTPException(400, "결재 연동 일정은 직접 삭제할 수 없습니다.")
+    db.query(ScheduleTripMember).filter(ScheduleTripMember.schedule_id == sch.id).delete(
+        synchronize_session=False
+    )
     sch.status = "CANCELLED"
     db.commit()
     return RedirectResponse(url="/calendar", status_code=303)

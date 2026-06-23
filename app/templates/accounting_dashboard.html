@@ -41,11 +41,11 @@
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
     <div>
-      <h2 style="margin:0;">일월계표</h2>
-      <p class="muted" style="margin:4px 0 0 0;">출장복명서 청구액(최종 승인) vs 수금액 비교</p>
+      <h2 style="margin:0;">일월계표{% if branch_label %} <span class="muted" style="font-size:16px;font-weight:600;">· {{ branch_label }}</span>{% endif %}</h2>
+      <p class="muted" style="margin:4px 0 0 0;">소속 지사 출장복명서 청구(최종 승인) vs 수금 비교</p>
     </div>
     <div class="page-links">
-      <a class="btn ghost" href="/accounting/ledger">미수금대장 →</a>
+      <a class="btn ghost" href="/accounting/ledger{% if accounting_branch_id %}?branch_id={{ accounting_branch_id }}{% endif %}">미수금대장 →</a>
     </div>
   </div>
 
@@ -83,6 +83,16 @@
       <label for="filter_year">기준연도</label>
       <input type="number" id="filter_year" min="2000" max="2100" value="{{ ref if mode == 'year' else filter_year }}">
     </div>
+    {% if branches %}
+    <div class="field">
+      <label for="acct_branch">조회 지사</label>
+      <select name="branch_id" id="acct_branch">
+        {% for b in branches %}
+        <option value="{{ b.id }}" {% if accounting_branch_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
     <div class="field">
       <label>&nbsp;</label>
       <button type="submit" class="btn primary">조회</button>

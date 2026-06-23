@@ -15,6 +15,31 @@
     <div class="flash">{{ flash }}</div>
   {% endif %}
 
+  {% if work_log_duty and work_log_duty.missing %}
+  <div class="alert" style="margin-top:12px;border-color:#f59e0b;background:#fffbeb;">
+    <strong>업무일지</strong> — {{ work_log_duty.message }}
+    <a class="btn primary btn-sm" href="/doc/new?doc_type=WORK_LOG" style="margin-left:8px;">업무일지 작성</a>
+  </div>
+  {% elif work_log_duty and work_log_duty.on_leave %}
+  <div class="muted small" style="margin-top:12px;padding:10px 12px;background:#f8fafc;border-radius:8px;">
+    {{ work_log_duty.message }} (휴가 중에는 업무일지 불필요)
+  </div>
+  {% elif work_log_duty and work_log_duty.weekend_off %}
+  <div class="muted small" style="margin-top:12px;padding:10px 12px;background:#f8fafc;border-radius:8px;">
+    {{ work_log_duty.message }}
+  </div>
+  {% elif work_log_duty and work_log_duty.exempt %}
+  <div class="muted small" style="margin-top:12px;">{{ work_log_duty.message }}</div>
+  {% elif work_log_duty and work_log_duty.submitted %}
+  <div class="muted small" style="margin-top:12px;">{{ work_log_duty.message }}</div>
+  {% endif %}
+
+  {% if can_write_trip_report %}
+  <div class="muted small" style="margin-top:8px;">
+    출장복명서: {{ trip_writer_dept_label }} 소속 — 출장 후 <a href="/doc/new?doc_type=TRIP_REPORT">출장복명서 작성</a>
+  </div>
+  {% endif %}
+
   <div style="margin-top:12px; overflow:auto;">
     <form method="post" action="/doc/batch_approve" id="batchApproveForm">
       <div style="margin-bottom:8px; display:flex; justify-content:space-between;">

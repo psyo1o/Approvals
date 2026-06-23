@@ -52,8 +52,20 @@
 | `OVERTIME` | 연장근무 신청 | |
 | `CERTIFICATE` | 증명서 발급 | |
 | `QUALITY` | 품질문서 | QualityDoc 연동 |
-| `WORK_LOG` | 업무일지 | WorkLog / WorkLogLine |
-| `TRIP_REPORT` | 출장복명서 | TripReport / Line, `APPROVED_FINAL` → 회계 |
+| `WORK_LOG` | 업무일지 | WorkLog / WorkLogLine, `mode=GRADE_TIER` |
+| `TRIP_REPORT` | 출장복명서 | TripReport / Line, `APPROVED_FINAL` → 회계, 관리팀·측정팀 자동 결재 |
+
+### 문서 결재 모드 (`documents.mode`)
+
+| 값 | 설명 |
+|----|------|
+| `SEQUENTIAL` | 직급 낮은 순 1명씩 (`order_no` 오름차순) |
+| `PARALLEL` | 지정 결재자 전원 동시 `PENDING` |
+| `GRADE_TIER` | 업무일지: 직급 단계별 순차, **동일 `order_no`는 동시 결재** |
+
+**직급 순서:** `grades.level`(ORM `sort_order`) 작을수록 목록 상단(높은 직급). 상신·자동 결재선은 `level` **큰 값(낮은 직급)부터** `order_no` 부여.
+
+**출장복명서 결재 대상:** `TRIP_REPORT_APPROVAL_DEPTS`(기본 `관리팀,측정팀`). 사용자 `dept`가 접두사와 일치하면 포함.
 
 ### 결재선 (`approvers.action`)
 
@@ -158,8 +170,9 @@
 | GET | `/file/message_attachment/{id}` | 쪽지 첨부 |
 | GET | `/notifications` | 알림 목록 (진입 시 읽음 처리) |
 | GET | `/calendar` | 캘린더 |
-| GET | `/me`, `/my_profile` | 내 정보 |
-| GET | `/org` | 조직도 |
+| GET/POST | `/me` | 내 정보 (부서·직급 드롭다운, `POST` 저장) |
+| GET | `/my_profile` | (레거시) 내 정보 |
+| GET | `/org` | 조직도 (부서별 카드) |
 
 ### 3.6 알림·일정 API
 
@@ -187,18 +200,26 @@
 | POST | `/admin/users/{id}/delete` | 비활성화 |
 | GET | `/admin/users/{id}/edit` | 수정 폼 |
 | POST | `/admin/users/{id}/edit` | 수정 저장 |
+| GET | `/admin/depts` | 부서 관리 |
+| POST | `/admin/depts/add` | 부서 추가 |
+| POST | `/admin/depts/{id}/move-up`, `move-down` | 부서 표시 순서 |
+| POST | `/admin/depts/{id}/delete`, `restore` | 부서 비활성화·복구 |
 | GET | `/admin/grades` | 직급 관리 |
 | POST | `/admin/grades/add` | 직급 추가 |
+| POST | `/admin/grades/{id}/move-up`, `move-down` | 직급 결재 순서 |
 | POST | `/admin/grades/{id}/delete` | 직급 비활성화 |
 | POST | `/admin/grades/{id}/restore` | 직급 복구 |
 
+**사용자·내정보:** `dept_id`, `grade_id` 폼만 반영. 수기 `dept`/`grade` 텍스트 필드 없음.
+
 ---
 
-## 4. DB 모델 전체 (22개)
+## 4. DB 모델 전체
 
 | 모델 | 테이블 | 용도 |
 |------|--------|------|
-| Grade | grades | 직급 |
+| Grade | grades | 직급 (`level`=순서, 작을수록 높은 직급) |
+| Department | departments | 부서 (`sort_order`) |
 | User | users | 사용자 |
 | Document | documents | 결재 문서 |
 | Approver | approvers | 결재선 (`original_approver_id` Phase 6.3) |
@@ -214,20 +235,41 @@
 | Schedule | schedules | 일정 (휴가 연동) |
 | WorkLog | worklogs | 업무일지 |
 | WorkLogLine | worklog_lines | 업무일지 행 |
-| Region | regions | 출장/회계 지역 |
-| Collection | collections | 수금 |
+| Branch | branches | 지사 (원주 WJ, 제천 JC) |
+| Region | regions | 출장/회계 지역 (**지사별**, `branch_id`+`name` UNIQUE) |
+| Collection | collections | 수금 (`branch_id`) |
 | TripReport | trip_reports | 출장복명서 헤더 |
 | TripReportLine | trip_report_lines | 세금계산서 행 |
 | QualityDoc | quality_docs | 품질 리비전 |
 
-### regions / collections
+### branches / regions / collections (Phase 7)
 
 ```text
-regions: id, name (UNIQUE)
-collections: id, company_name, region_name, amount, collection_date, note
+branches: id, name, code, is_headquarters
+regions: id, name, branch_id  — UNIQUE(branch_id, name)
+collections: id, company_name, region_name, amount, collection_date, note, branch_id
+documents.branch_id — 출장복명서 회계 청구 집계 기준
 ```
 
-기본 지역 시드: **원주, 제천, 단양** (`_seed_default_regions`).
+기본 지역 시드: **원주, 제천, 단양** — 지사 1·2 각각 (`_seed_regions_per_branch`).
+
+**회계 조회:** 일반 사용자 = `users.branch_id`. 관리자·`can_switch_branch_view` = `?branch_id=` 또는 헤더 `view_branch_id` 쿠키.
+
+**결재 문서 등록:** 상신 시 `documents.branch_id` = 작성자 `users.branch_id` (WORK_LOG, TRIP_REPORT, LEAVE, GENERAL 등 전 유형).
+
+**결재 가시성** (`branch_scope.visible_document_ids`):
+
+| 조건 | 포함 |
+|------|------|
+| 조회 지사 | `documents.branch_id == resolve_view_branch_id()` (기본 소속 지사) |
+| 결재 참여 | `approvers`에 본인(또는 대결 위임자)이 있는 **타지사** 문서 |
+| 본인 작성 | `creator_id` 본인 문서(지사 무관) |
+
+**조회 지사 전환:** `is_admin` 또는 **원주본사**(`is_headquarters`) + 「대표」 이상. 제천 대표 불가. **통합 목록 없음.**
+
+**업무일지:** 전 직원(제외 직급·휴가 제외), 결재 없이 `RECORD` 즉시 완료.
+
+**출장복명서 작성:** `doc_requirements` — 부서 접두사 기본 `관리,측정`.
 
 ### trip_report_lines (회계 청구)
 
@@ -253,7 +295,8 @@ collections: id, company_name, region_name, amount, collection_date, note
 6. `attachments` — uploader_id, filesize, created_at + uploader_id 백필  
 7. `schedules`, `worklogs`, `trip_reports`, `quality_docs` — Phase 1~4 컬럼  
 8. `trip_reports.region_id`, `collections.*` — Phase 5  
-9. 지역 시드, `APPROVED` → `APPROVED_FINAL` UPDATE  
+9. **Phase 7** — `branches`, `users/documents/quality_docs/collections/regions.branch_id`, regions 테이블 재구성( SQLite )  
+10. 지역 시드(지사별), `APPROVED` → `APPROVED_FINAL` UPDATE  
 
 **Dialect:** SQLite `PRAGMA` / PostgreSQL·MariaDB `inspect` — `DATABASE_URL` 미설정 시 `sqlite:///{APP_DATA_DIR}/app.db`.
 

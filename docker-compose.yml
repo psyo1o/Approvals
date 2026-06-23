@@ -10,7 +10,9 @@ services:
       APP_ADMIN_ID: ${APP_ADMIN_ID}
       APP_ADMIN_PW: ${APP_ADMIN_PW}
       APP_DATA_DIR: /data
-      QUALITY_NAS_ROOT: "/nas_quality"
+      QUALITY_NAS_ROOT: "/nas_quality_wonju"
+      QUALITY_NAS_ROOT_WONJU: "/nas_quality_wonju"
+      QUALITY_NAS_ROOT_JECHEON: "/nas_quality_jecheon"
       DATABASE_URL: ${DATABASE_URL:-}
       ALLOWED_IPS: ${ALLOWED_IPS:-}
       SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-7200}
@@ -19,5 +21,8 @@ services:
     volumes:
       - ./app:/app
       - ./data:/data
-      - "/volume1/품질문서/(주)영동환경이앤텍 품질문서:/nas_quality:ro"
+      # 1. 원주 본사 품질문서 (기존 경로 유지하되 내부 연결명을 _wonju로 변경)
+      - "/volume1/품질문서/(주)영동환경이앤텍 품질문서:/nas_quality_wonju:ro"
+      # 2. 제천 지사 품질문서 (방금 1단계에서 마운트한 폴더를 내부 연결명 _jecheon으로 매핑)
+      - "/volume1/docker/(주)와이디이솔루션 관련 감사자료:/nas_quality_jecheon:ro"
     restart: unless-stopped

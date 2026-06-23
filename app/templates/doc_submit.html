@@ -3,52 +3,147 @@
 <div class="card">
   <h2 style="margin:0 0 8px 0;">결재선 지정 및 상신</h2>
   <p class="muted small">문서: <strong>{{ doc.title }}</strong> ({{ doctype_ko(doc.doc_type) }})</p>
+  {% if approval_guide %}
+  <p class="muted small" style="margin-top:8px; padding:8px 10px; background:#f0fdf4; border-radius:8px; border:1px solid #bbf7d0;">
+    <strong>권장 결재선:</strong> {{ approval_guide }}
+  </p>
+  {% endif %}
   {% if error %}<div class="flash" style="margin-top:10px;">{{ error }}</div>{% endif %}
 
+  {% if grades_ordered %}
+  <p class="muted small" style="margin-top:8px;">
+    직급 순서(높음→낮음):
+    {% for g in grades_ordered %}{{ g.name }}{% if not loop.last %} → {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+
   <form method="post" action="/doc/{{ doc.id }}/submit" style="margin-top:16px;">
+    {% if auto_trip %}
+    <section class="admin-callout" style="margin-bottom:16px;">
+      <strong>출장복명서</strong>는 <strong>{{ trip_dept_label }}</strong> 소속 구성원이
+      <strong>직급 순서대로 자동 결재</strong>합니다. (작성자 제외)
+    </section>
+    {% if trip_team_users %}
+    <ol style="margin:0 0 16px 1.25rem;padding:0;">
+      {% for uid in trip_sorted_ids %}
+        {% for u in trip_team_users if u.id == uid %}
+        <li>{{ u.name }} — {{ u.dept }} / {{ u.grade or '직급 미지정' }}</li>
+        {% endfor %}
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="flash">결재자가 없습니다. 부서 관리에 「{{ trip_dept_label }}」을 등록하고 사용자 부서를 맞춰 주세요.</p>
+    {% endif %}
+    <div class="row" style="margin-top:20px; justify-content:flex-end; gap:8px;">
+      <a class="btn ghost" href="/doc/{{ doc.id }}">취소</a>
+      <button class="btn primary" type="submit" {% if not trip_team_users %}disabled{% endif %}>상신</button>
+    </div>
+    {% elif auto_work_log %}
+    <section class="admin-callout" style="margin-bottom:16px;">
+      <strong>업무일지</strong> — <strong>평일</strong>: 휴가·제외 직급 제외 전원 작성.
+      <strong>주말</strong>: 출장·주말근무·근무표 등록 근무자만 작성.
+      결재는 동일 지사 <strong>{{ work_log_min_grade }}~{{ work_log_max_grade }}</strong> 직급이
+      <strong>낮은 직급부터</strong> 진행하며, 작성자는 <strong>작성완료</strong> 처리됩니다.
+      동일 직급은 <strong>동시 결재</strong>합니다.
+    </section>
+    {% if work_log_team_users or user %}
+    <ol style="margin:0 0 16px 1.25rem;padding:0;">
+      <li>{{ user.name }} — {{ user.grade or '직급 미지정' }} <span class="muted">(작성자 · 작성완료)</span></li>
+      {% for uid in work_log_sorted_ids %}
+        {% for u in work_log_team_users if u.id == uid %}
+        <li>{{ u.name }} — {{ u.grade or '직급 미지정' }}</li>
+        {% endfor %}
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="flash">결재 대상이 없습니다. 동일 부서에 활성 사용자가 있는지 확인하세요.</p>
+    {% endif %}
+    <div class="row" style="margin-top:20px; justify-content:flex-end; gap:8px;">
+      <a class="btn ghost" href="/doc/{{ doc.id }}">취소</a>
+      <button class="btn primary" type="submit">상신</button>
+    </div>
+    {% elif grade_tier %}
+    <p class="muted small" style="margin-bottom:12px;">
+      결재자를 고르는 순서는 상관없습니다. <strong>낮은 직급부터</strong> 결재하고,
+      <strong>같은 직급은 동시에</strong> 결재할 수 있습니다.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;max-height:360px;overflow:auto;padding:4px 0;">
+      {% for u in users %}
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+        <input type="checkbox" name="approver_ids" value="{{ u.id }}">
+        <span>
+          <strong>{{ u.name }}</strong>
+          <span class="muted small" style="display:block;">{{ u.grade or '직급 미지정' }}{% if u.dept %} · {{ u.dept }}{% endif %}{% if u.branch and u.branch_id != user.branch_id %} · {{ u.branch.name }}{% endif %}</span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="row" style="margin-top:20px; justify-content:flex-end; gap:8px;">
+      <a class="btn ghost" href="/doc/{{ doc.id }}">취소</a>
+      <button class="btn primary" type="submit">상신</button>
+    </div>
+    {% else %}
     <label>결재 모드</label>
     <select name="mode" class="input-sm" style="margin-bottom:12px;">
-      <option value="SEQUENTIAL" selected>순차 (기본)</option>
-      <option value="PARALLEL">병렬 (전원 승인)</option>
+      <option value="SEQUENTIAL" selected>순차 (직급 낮은 순)</option>
+      <option value="PARALLEL">병렬 (전원 동시)</option>
     </select>
-    <div class="muted small" style="margin-bottom:16px;">순차: 위에서 아래 순서로 결재 · 병렬: 지정한 결재자가 동시에 결재</div>
+    <div class="muted small" style="margin-bottom:16px;">
+      순차: 선택 순서와 관계없이 <strong>직급이 낮은 사람부터</strong> 결재합니다.
+    </div>
 
-    <div id="approver-box" style="display:grid;grid-template-columns:1fr;gap:10px">
-      <div>
-        <label>1차 결재자</label>
-        <select name="approver1" required>
-          <option value="">(선택)</option>
-          {% for u in users %}
-            <option value="{{ u.id }}">{{ u.name }} ({{ u.username }}){% if u.is_admin %} · 관리자{% endif %}</option>
-          {% endfor %}
-        </select>
-      </div>
-      {% for n in [2,3,4,5] %}
-      <div class="ap-row" data-n="{{ n }}" style="display:none">
-        <label>{{ n }}차 결재자</label>
-        <select name="approver{{ n }}" disabled>
-          <option value="">(선택 안함)</option>
-          {% for u in users %}
-            <option value="{{ u.id }}">{{ u.name }} ({{ u.username }}){% if u.is_admin %} · 관리자{% endif %}</option>
-          {% endfor %}
-        </select>
-      </div>
+    <p class="muted small" style="margin-bottom:8px;">결재자 선택 (순서 무관, 상신 시 직급순 정렬)</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;max-height:280px;overflow:auto;padding:4px 0;margin-bottom:12px;">
+      {% for u in users %}
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+        <input type="checkbox" name="approver_ids" value="{{ u.id }}">
+        <span>
+          <strong>{{ u.name }}</strong>
+          <span class="muted small" style="display:block;">{{ u.grade or '직급 미지정' }}{% if u.branch and u.branch_id != user.branch_id %} · {{ u.branch.name }}{% endif %}</span>
+        </span>
+      </label>
       {% endfor %}
     </div>
 
-    <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-      <button type="button" class="btn ghost small" id="btn-add-approver">+ 결재자 추가</button>
-      <button type="button" class="btn ghost small" id="btn-remove-approver">− 마지막 제거</button>
-      <span class="muted small">최대 5명</span>
-    </div>
+    <details class="muted small" style="margin-bottom:12px;">
+      <summary>고급: 1~5차 순서 지정 (선택)</summary>
+      <div id="approver-box" style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+        <div>
+          <label>1차 결재자</label>
+          <select name="approver1">
+            <option value="">(선택 안함)</option>
+            {% for u in users %}
+              <option value="{{ u.id }}">{{ u.name }} — {{ u.grade or '직급 미지정' }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% for n in [2,3,4,5] %}
+        <div class="ap-row" data-n="{{ n }}" style="display:none">
+          <label>{{ n }}차 결재자</label>
+          <select name="approver{{ n }}" disabled>
+            <option value="">(선택 안함)</option>
+            {% for u in users %}
+              <option value="{{ u.id }}">{{ u.name }} — {{ u.grade or '직급 미지정' }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" class="btn ghost small" id="btn-add-approver">+ 결재자 추가</button>
+        <button type="button" class="btn ghost small" id="btn-remove-approver">− 마지막 제거</button>
+      </div>
+    </details>
 
     <div class="row" style="margin-top:20px; justify-content:flex-end; gap:8px;">
       <a class="btn ghost" href="/doc/{{ doc.id }}">취소</a>
       <button class="btn primary" type="submit">상신</button>
     </div>
+    {% endif %}
   </form>
 </div>
 
+{% if not auto_trip and not auto_work_log and not grade_tier %}
 <script>
 (function(){
   const rows = Array.from(document.querySelectorAll("#approver-box .ap-row"));
@@ -74,4 +169,5 @@
   rmBtn  && rmBtn.addEventListener("click", hideLast);
 })();
 </script>
+{% endif %}
 {% endblock %}

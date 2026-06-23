@@ -2,36 +2,66 @@
 {% block content %}
 <div class="card" style="max-width:680px;">
   <h3>내 정보</h3>
+  {% if flash %}<div class="alert" style="margin-bottom:12px;">{{ flash }}</div>{% endif %}
   <form method="post" action="/me">
     <div class="row">
       <div style="flex:1; min-width:200px;">
         <label>이름</label>
-        <input name="name" value="{{ user.name }}">
+        <input name="name" value="{{ user.name }}" required>
       </div>
       <div style="flex:1; min-width:200px;">
         <label>부서</label>
-        <input name="dept" value="{{ user.dept }}">
+        <select name="dept_id">
+          <option value="">(선택)</option>
+          {% for d in depts %}
+          <option value="{{ d.id }}" {% if user.dept == d.name %}selected{% endif %}>{{ d.name }}</option>
+          {% endfor %}
+        </select>
+        {% if user.dept and not depts|selectattr('name', 'equalto', user.dept)|list %}
+        <p class="muted small" style="margin:4px 0 0;">현재: {{ user.dept }} — 목록에 없음. 관리자에게 부서 등록을 요청하세요.</p>
+        {% endif %}
+      </div>
+      <div style="flex:1; min-width:200px;">
+        <label>소속 지사</label>
+        <input value="{% if user.branch %}{{ user.branch.name }} ({{ user.branch.code }}){% else %}—{% endif %}" disabled style="background:#f1f5f9;">
+        <p class="muted small" style="margin:4px 0 0;">지사 변경은 관리자에게 요청하세요.</p>
       </div>
       <div style="flex:1; min-width:200px;">
         <label>직급</label>
-        <input name="grade" value="{{ user.grade }}">
+        <select name="grade_id">
+          <option value="">(선택)</option>
+          {% for g in grades %}
+          <option value="{{ g.id }}" {% if user.grade == g.name %}selected{% endif %}>{{ g.name }}</option>
+          {% endfor %}
+        </select>
+        {% if user.grade and not grades|selectattr('name', 'equalto', user.grade)|list %}
+        <p class="muted small" style="margin:4px 0 0;">현재: {{ user.grade }} — 목록에 없음. 관리자에게 직급 등록을 요청하세요.</p>
+        {% endif %}
       </div>
     </div>
-    
+
     <div style="margin-top:16px;">
       <label>부재중 대결자 (위임)</label>
       <select name="delegate_id">
         <option value="">-- 미지정 --</option>
         {% for u in users %}
-        <option value="{{ u.id }}" {% if user.delegate_id == u.id %}selected{% endif %}>{{ u.name }} ({{ u.grade }})</option>
+        <option value="{{ u.id }}" {% if user.delegate_id == u.id %}selected{% endif %}>{{ u.name }} ({{ u.grade or '직급 미지정' }})</option>
         {% endfor %}
       </select>
       <div class="muted" style="margin-top:4px; font-size:12px;">휴가나 부재 시 나 대신 결재할 사람을 지정합니다.</div>
     </div>
 
     <div style="margin-top:16px;">
-      <button class="btn" type="submit">저장</button>
+      <button class="btn primary" type="submit">저장</button>
     </div>
   </form>
+  <p class="muted small" style="margin-top:12px;">
+    부서·직급 추가는
+    {% if user.is_admin %}
+    <a href="/admin/depts">시스템 관리 → 부서</a> · <a href="/admin/grades">직급</a>에서만 가능합니다.
+    {% else %}
+    관리자가 「시스템 관리 → 부서 / 직급」에서 등록합니다.
+    {% endif %}
+  </p>
 </div>
 {% endblock %}

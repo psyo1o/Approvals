@@ -5,6 +5,20 @@
   <div class="small">문서번호: <b>{{ doc.doc_no }}</b> | 제출자: {{ submitter.name if submitter else '-' }} | 상태: <b>{{ doc.status }}</b></div>
   <h3 style="margin-top:10px">{{ doc.title }}</h3>
 
+{% if doc.doc_type in ["OVERTIME", "EARLY_ARRIVAL", "WEEKEND_WORK"] %}
+  <div class="card" style="margin-top:12px; background:#f8fafc;">
+    <div style="display:flex; gap:16px; flex-wrap:wrap;">
+      <div><b>근무일</b>: {{ doc.overtime_date or "-" }}</div>
+      {% if doc.doc_type == "OVERTIME" %}
+      <div><b>시간</b>: {{ doc.overtime_start or "-" }} ~ {{ doc.overtime_end or "-" }}</div>
+      {% endif %}
+      {% if doc.work_hours %}<div><b>근무시간</b>: {{ doc.work_hours }}h</div>{% endif %}
+      {% if doc.overtime_reason %}<div><b>사유</b>: {{ doc.overtime_reason }}</div>{% endif %}
+    </div>
+    <p class="muted small" style="margin:8px 0 0 0;">승인 시 <a href="/work-schedule">근무표</a>에 반영됩니다.</p>
+  </div>
+{% endif %}
+
 {% if doc.doc_type == "LEAVE" %}
   <div class="card" style="margin-top:12px;">
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
@@ -98,7 +112,16 @@
 
   {% if doc.status == "DRAFT" and user and user.id == doc.creator_id %}
   <div style="margin-top:10px">
-    <a class="btn primary" href="/doc/{{ doc.id }}/submit">결재선 지정 및 상신</a>
+    <a class="btn primary" href="/doc/{{ doc.id }}/submit">{% if doc.doc_type == 'WORK_LOG' %}결재선 확인 및 상신{% else %}결재선 지정 및 상신{% endif %}</a>
+  </div>
+  {% endif %}
+
+  {% if can_delete %}
+  <div style="margin-top:10px">
+    <form method="post" action="/doc/{{ doc.id }}/delete" style="display:inline;margin:0;"
+      onsubmit="return confirm('{% if doc.doc_type == 'WORK_LOG' %}이 업무일지를 삭제할까요? 같은 날짜에 다시 작성할 수 있습니다.{% else %}이 문서를 삭제할까요?{% endif %}');">
+      <button type="submit" class="btn danger">문서 삭제</button>
+    </form>
   </div>
   {% endif %}
 
@@ -153,14 +176,21 @@
     <tbody>
     {% for a in approvers %}
       <tr>
-        <td>{{ a.seq }}차</td>
+        <td>{% if doc.mode == 'GRADE_TIER' %}{% if a.seq == 0 %}작성{% else %}{{ a.seq }}단계{% endif %}{% else %}{{ a.seq }}차{% endif %}</td>
         <td>
           {{ a.user.name if a.user else '-' }}
+          {% if a.user and a.user.grade %}<span class="muted" style="font-size:12px;"> · {{ a.user.grade }}</span>{% endif %}
           {% if a.original_user %}
           <span class="muted" style="font-size:12px;">({{ a.original_user.name }} 대결)</span>
           {% endif %}
         </td>
-        <td>{{ a.action }}</td>
+        <td>
+          {% if a.action == 'APPROVED' and doc.doc_type == 'WORK_LOG' and a.user and a.user.id == doc.creator_id %}
+          작성완료
+          {% else %}
+          {{ a.action }}
+          {% endif %}
+        </td>
         <td>{{ a.acted_at.strftime('%Y-%m-%d %H:%M') if a.acted_at else '' }}</td>
       </tr>
     {% endfor %}

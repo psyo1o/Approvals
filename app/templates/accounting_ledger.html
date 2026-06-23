@@ -20,11 +20,11 @@
 <div class="card no-print">
   <div class="ledger-toolbar">
     <div>
-      <h2 style="margin:0;">미수금대장</h2>
-      <p class="muted" style="margin:4px 0 0 0;">기준월 {{ month_ref }} · 업체·지역별 미수 잔액(이월 누적 포함)</p>
+      <h2 style="margin:0;">미수금대장{% if branch_label %} <span class="muted" style="font-size:16px;font-weight:600;">· {{ branch_label }}</span>{% endif %}</h2>
+      <p class="muted" style="margin:4px 0 0 0;">기준월 {{ month_ref }} · 업체·지역별 미수 잔액(이월 누적 포함, 지사별)</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <a class="btn ghost" href="/accounting/dashboard">← 일월계표</a>
+      <a class="btn ghost" href="/accounting/dashboard{% if accounting_branch_id %}?branch_id={{ accounting_branch_id }}{% endif %}">← 일월계표</a>
       <button type="button" class="btn primary" onclick="downloadLedgerPdf()">PDF 다운로드</button>
     </div>
   </div>
@@ -47,6 +47,16 @@
       <label for="ledger_company">업체명</label>
       <input type="text" name="company" id="ledger_company" value="{{ company_q }}" placeholder="검색">
     </div>
+    {% if branches %}
+    <div class="field">
+      <label for="ledger_branch">조회 지사</label>
+      <select name="branch_id" id="ledger_branch">
+        {% for b in branches %}
+        <option value="{{ b.id }}" {% if accounting_branch_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
     <div class="field">
       <label>&nbsp;</label>
       <button type="submit" class="btn primary">조회</button>
